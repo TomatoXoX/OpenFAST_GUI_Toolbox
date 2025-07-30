@@ -6,7 +6,7 @@
 
 A suite of user-friendly Python tools designed to streamline and enhance the OpenFAST workflow. This toolkit provides utilities for 3D visualization, automated test case generation, and output data conversion.
 
-![3D Visualization Example](https://i.imgur.com/sA3jFzU.png)
+![3D Visualization Example](Resources/Fig1.jpg)
 *Example 3D visualization of the NREL 5MW turbine on the OC4-DeepCwind semi-submersible platform.*
 
 ---
@@ -119,7 +119,9 @@ An interactive Matplotlib window will appear with the 3D visualization. The scri
 
 This powerful GUI automates the creation and execution of parametric studies.
 
-![GUI Screenshot]
+![GUI](Resources/GUI_1.png)
+![GUI](Resources/GUI_2.png)
+
 *The Setup and Run tabs of the Test Case Generator GUI.*
 
 **To Run:**
