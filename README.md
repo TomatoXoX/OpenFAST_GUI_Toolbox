@@ -144,4 +144,12 @@ python test_case_gui.py
     -   Click **"Load Test Cases"** and select the directory you just generated.
     -   Browse for your OpenFAST executable (e.g., `openfast_x64.exe`).
     -   Select the cases you want to run from the list.
-    -   Click **"Run Selected"** to start the simulations in parallel. Watch the log and progress bar for real-time updates.
+    -   Click **"Run Selected"** to start the simulations in parallel. Watch the log and progress bar for real-time updates.<br>
+### **IMPORTANT NOTES**
+- In the Test Case generation folder, there should be a 5MW_Baseline Folder
+**File Structure**<br>
+  Test_Case Folder<br>
+  |--5MW_Baseline<br>
+  |--Case_001<br>
+  |--Case_002<br>
+  |--...<br>
