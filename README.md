@@ -4,70 +4,86 @@
 [![License: MIT][license-badge]][license-link]
 [![Pull Requests Welcome][pr-badge]][pr-link]
 
-A suite of user-friendly Python tools designed to streamline and enhance the OpenFAST workflow. This toolkit provides utilities for 3D visualization, automated test case generation, and output data conversion.
+A user-friendly, all-in-one graphical application designed to manage the entire OpenFAST simulation workflow, from parametric case generation and parallel execution to advanced post-processing and data analysis.
 
-![3D Visualization Example](Resources/Fig1.jpg)
-*Example 3D visualization of the NREL 5MW turbine on the OC4-DeepCwind semi-submersible platform.*
+![GUI Workflow Manager](Resources/GUI_Workflow.png)
+*The unified interface of the OpenFAST Workflow Manager, showing the Setup, Run, and Post-Process tabs.*
 
 ---
 
 ## Table of Contents
 
+- [Changelog](#changelog)
 - [Features](#features)
-- [Repository Structure](#repository-structure)
 - [Installation](#installation)
 - [Usage](#usage)
-  - [1. 3D Model Visualizer (`visualizer.py`)](#1-3d-model-visualizer-visualizerpy)
-  - [2. Test Case Generator GUI (`test_case_gui.py`)](#2-test-case-generator-gui-test_case_guipy)
-  - [3. Output File Converter (`converter.py`)](#3-output-file-converter-converterpy)
+  - [Workflow Overview](#workflow-overview)
+  - [Tab 1: Setup Cases](#tab-1-setup-cases)
+  - [Tab 2: Run Simulations](#tab-2-run-simulations)
+  - [Tab 3: Post-Process Results](#tab-3-post-process-results)
+  - [Important Notes](#important-notes)
 - [Contributing](#contributing)
 - [License](#license)
+- [Final Notes](#final-notes)
+
+---
+
+## Changelog
+
+### **v0.2 - The Workflow Manager Update**
+
+This version marks a major architectural shift, unifying all previous scripts into a single, cohesive application and introducing a full-featured post-processing suite.
+
+-   **🚀 Major Rearchitecture:** All separate scripts have been deprecated. Their functionality is now integrated into a single, powerful GUI application (`GUI_v0.2.py`).
+-   **✨ NEW - Post-Processing Tab:** A complete, parallelized analysis workflow is now included:
+    -   **Automated CSV Conversion:** Converts `.out` files to `.csv` format.
+    -   **Automated Plotting:** Generates time-series plots for key output channels with statistical annotations.
+    -   **d'Alembert Analysis:** A new, advanced feature to compute static equivalent loads from dynamic results, complete with automated mass/inertia calculations.
+-   **✨ NEW - Tutorial Tab:** An in-app welcome screen provides a comprehensive guide for new users on the entire workflow.
+-   **✨ NEW - Context Menu:** Right-click any test case in the 'Run' or 'Post-Process' tabs to open its folder directly.
+-   **GUI Enhancements:**
+    -   Tabs are now numbered to guide the user through the logical workflow (Setup -> Run -> Analyze).
+    -   Each major stage now has its own dedicated log window for clearer feedback.
 
 ---
 
 ## Features
 
-✅ **3D Model Visualizer (`visualizer.py`)**
--   Parses the main `.fst` file and automatically follows links to other input files (ElastoDyn, MoorDyn, etc.).
--   Generates an interactive 3D plot of the wind turbine, tower, platform, and mooring system.
--   Displays key geometric parameters and environmental conditions directly on the plot.
--   Saves a summary of the model configuration to `.json` and `.txt` files.
+The toolkit is now a single, integrated application that handles the end-to-end simulation process.
 
-✅ **Test Case Generator GUI (`test_case_gui.py`)**
--   A user-friendly graphical interface for creating and managing large simulation campaigns.
--   **Parameter Discovery:** Automatically scans all input files to find and catalog available numerical parameters.
+✅ **Tab 1: Setup Cases**
+-   **Parameter Discovery:** Automatically scans a base `.fst` file and all its linked input files to find and catalog available numerical parameters.
 -   **Multiple Generation Strategies:**
     -   **Grid Search:** Generates all possible combinations of parameter variations.
-    -   **CSV Column-wise:** Creates test cases directly from columns in a CSV file.
+    -   **CSV Column-wise:** Creates test cases where each case corresponds to a row of values provided in comma-separated lists.
     -   **Sampling:** Generates cases using Latin Hypercube, Uniform, or Normal distributions (requires `scipy`).
--   **Parallel Execution:** Runs selected test cases in parallel to significantly speed up simulations, with real-time progress and logging.
--   **Configuration Management:** Save and load your test case generation setup to a `.json` file for reproducibility.
+-   **Configuration Management:** Save and load your entire parametric study setup to a `.json` file for reproducibility.
 
-✅ **Output File Converter (`converter.py`)**
--   Converts standard OpenFAST text output files (`.out`) into the widely-used `.csv` format.
--   Robustly handles different numerical formats, including scientific notation.
--   Automatically generates:
-    -   A clean `.csv` file with all data channels.
-    -   A `_metadata.txt` file with column names and units.
-    -   A `_stats.csv` file with descriptive statistics (mean, std, etc.).
-    -   A `_plots.png` image with example plots of key channels like platform motion and power generation.
+✅ **Tab 2: Run Simulations**
+-   **Parallel Execution:** Runs selected OpenFAST test cases in parallel, with a configurable number of workers to maximize CPU usage.
+-   **Real-time Monitoring:** Track the status, runtime, and results of each simulation in real-time. A detailed log shows the live output from each OpenFAST instance.
 
----
+✅ **Tab 3: Post-Process Results**
+-   **Automated Analysis Pipeline:** Select completed cases and run a chain of analysis tasks on them in parallel.
+-   **Robust CSV Conversion:** Converts standard OpenFAST text output files (`.out`) into the widely-used `.csv` format.
+-   **Automatic Plot Generation:** Creates publication-ready plots for key output channels (e.g., platform motion, tower base loads, fairlead tensions) with statistical annotations (mean, min, max).
+-   **Advanced d'Alembert Analysis:** Performs a static analysis by calculating inertial forces to determine static-equivalent loads, generating detailed reports and extrema files.
+
 ---
 
 ## Installation
 
 ### Prerequisites
 -   Python 3.7+
--   A working installation of OpenFAST (required for running simulations with the GUI).
--   The OpenFAST r-test repository is a great source for example models.
+-   A working installation of OpenFAST is required to run simulations.
+-   The [OpenFAST r-test repository](https://github.com/OpenFAST/r-test) is a great source for example models.
 
 ### Setup Steps
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/YOUR_USERNAME/openfast-python-toolkit.git
-    cd openfast-python-toolkit
+    git clone https://github.com/TomatoXoX/OpenFAST_GUI_Toolbox.git
+    cd OpenFAST_GUI_Toolbox
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -93,63 +109,9 @@ A suite of user-friendly Python tools designed to streamline and enhance the Ope
 
 ## Usage
 
-### 1. 3D Model Visualizer (`visualizer.py`)
+The toolkit is now a single application. The previously separate scripts have been integrated into this GUI.
 
-This script helps you verify your OpenFAST model's geometry and layout before running simulations.
-
-**To Run:**
-1.  Place the `visualizer.py` script in the same directory as your main `.fst` file and its associated data files (e.g., the `5MW_OC4Semi_WSt_WavesWN` directory from the r-test).
-2.  Modify the `main_fst_file` variable at the bottom of the script to match your file name.
-    ```python
-    if __name__ == "__main__":
-        # --- MODIFY THIS LINE ---
-        main_fst_file = '5MW_OC4Semi_WSt_WavesWN.fst'
-        # ----------------------
-        
-        # ... rest of the script
-    ```
-3.  Run the script from your terminal:
-    ```bash
-    python visualizer.py
-    ```
-
-An interactive Matplotlib window will appear with the 3D visualization. The script will also generate `openfast_model_summary.json` and `openfast_model_summary.txt` files in the same directory.
-
-### 2. Test Case Generator GUI (`test_case_gui.py`)
-
-This powerful GUI automates the creation and execution of parametric studies.
-
-![GUI](Resources/GUI_1.png)
-![GUI](Resources/GUI_2.png)
-
-*The Setup and Run tabs of the Test Case Generator GUI.*
-
-**To Run:**
-Simply execute the script from your terminal. No modifications are needed.
-python test_case_gui.py
-**Workflow:**
-1.  **Launch the GUI.**
-2.  **Setup Tab -> File Selection:**
-    -   Click "Browse" to select your base `.fst` file.
-    -   Choose an output directory for the generated cases.
-3.  **Setup Tab -> Parameter Discovery:**
-    -   Click **"Discover Parameters"**. The tool will scan all linked files and report the number of parameters found.
-4.  **Setup Tab -> Parameter Configuration:**
-    -   Click **"Add from Discovery"** to open a searchable list of all found parameters. Select the ones you want to vary and click "Add Selected".
-    -   Configure the range, steps, or list of values for each parameter based on the chosen "Distribution Type".
-5.  **Setup Tab -> Action:**
-    -   Click **"Generate Test Cases"**. The tool will create a sub-directory for each case in your specified output directory.
-6.  **Run Tests Tab:**
-    -   The GUI will prompt you to switch to the "Run Tests" tab.
-    -   Click **"Load Test Cases"** and select the directory you just generated.
-    -   Browse for your OpenFAST executable (e.g., `openfast_x64.exe`).
-    -   Select the cases you want to run from the list.
-    -   Click **"Run Selected"** to start the simulations in parallel. Watch the log and progress bar for real-time updates.<br>
-### **IMPORTANT NOTES**
-- In the Test Case generation folder, there should be a 5MW_Baseline Folder
-**File Structure**<br>
-  Test_Case Folder<br>
-  |--5MW_Baseline<br>
-  |--Case_001<br>
-  |--Case_002<br>
-  |--...<br>
+**To Launch:**
+Simply execute the main GUI script from your terminal.
+```bash
+python GUI_v0.2.py
