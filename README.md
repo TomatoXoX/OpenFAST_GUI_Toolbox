@@ -93,7 +93,6 @@ The toolkit is now a single, integrated application that handles the end-to-end 
     ```
 
 3.  **Install the required Python packages:**
-    The project dependencies are listed in `requirements.txt`.
     ```bash
     pip install -r requirements.txt
     ```
