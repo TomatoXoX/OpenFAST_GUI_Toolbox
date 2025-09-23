@@ -94,15 +94,11 @@ The toolkit is now a single, integrated application that handles the end-to-end 
 
 3.  **Install the required Python packages:**
     ```bash
-    pip install -r requirements.txt
+    pip install -r numpy matplotlib pandas scipy
     ```
     The `requirements.txt` file should contain:
     ```
-    numpy
-    matplotlib
-    pandas
-    scipy
-    ```
+
 
 ---
 
