@@ -96,10 +96,6 @@ The toolkit is now a single, integrated application that handles the end-to-end 
     ```bash
     pip install -r numpy matplotlib pandas scipy
     ```
-    The `requirements.txt` file should contain:
-    ```
-
-
 ---
 
 ## Usage
