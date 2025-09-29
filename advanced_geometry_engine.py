@@ -35,7 +35,6 @@ class PlatformModel:
         self.initial_tower_base_z = self._get_val(self.ed_data, 'TowerBsHt')
         self.initial_platform_ref_z = self._get_val(self.hd_data, 'PtfmRefzt')
 
-        # --- THIS IS WHERE THE ERROR OCCURRED ---
         self.initial_joints = self._parse_table_from_lines(self.hd_data, 'NJoints', ['id', 'x', 'y', 'z', 'type', 'overlap'])
         self.initial_fairleads = self._parse_fairleads_from_md()
 
@@ -45,28 +44,60 @@ class PlatformModel:
 
     def generate_variation(self, height_scale: float = 1.0, diameter_scale: float = 1.0) -> Dict[str, Any]:
         self._log(f"Generating variation: H_scale={height_scale:.3f}, D_scale={diameter_scale:.3f}")
+        
+        # --- FIX 5: Ensure numeric types before scaling ---
         scaled_joints = self.initial_joints.copy()
-        scaled_joints['x'] *= diameter_scale; scaled_joints['y'] *= diameter_scale; scaled_joints['z'] *= height_scale
-        scaled_fairleads = self.initial_fairleads.copy()
-        scaled_fairleads[:, 0] *= diameter_scale; scaled_fairleads[:, 1] *= diameter_scale; scaled_fairleads[:, 2] *= height_scale
+        for c in ['id','x','y','z','type','overlap']:
+            scaled_joints[c] = pd.to_numeric(scaled_joints[c], errors='coerce')
+
+        scaled_joints['x'] *= float(diameter_scale)
+        scaled_joints['y'] *= float(diameter_scale)
+        scaled_joints['z'] *= float(height_scale)
+
+        scaled_fairleads = np.asarray(self.initial_fairleads, dtype=float).copy()
+        scaled_fairleads[:, 0] *= float(diameter_scale)
+        scaled_fairleads[:, 1] *= float(diameter_scale)
+        scaled_fairleads[:, 2] *= float(height_scale)
+        
         scaled_tower_base_z = self.initial_tower_base_z * height_scale
         scaled_platform_ref_z = self.initial_platform_ref_z * height_scale
+        
         volume_scale_factor = (diameter_scale ** 2) * height_scale
         new_volume = self.initial_volume * volume_scale_factor
         new_mass = self.initial_mass * volume_scale_factor
+        
         roll_pitch_inertia_scale = volume_scale_factor * ((diameter_scale**2 + height_scale**2) / 2)
         yaw_inertia_scale = volume_scale_factor * (diameter_scale**2)
+        
         new_roll_inertia = self.initial_roll_inertia * roll_pitch_inertia_scale
         new_pitch_inertia = self.initial_pitch_inertia * roll_pitch_inertia_scale
         new_yaw_inertia = self.initial_yaw_inertia * yaw_inertia_scale
+        
         self._log(f"  - New Mass: {new_mass:.2f}, New Volume: {new_volume:.2f}")
         self._log(f"  - New Tower Base Z: {scaled_tower_base_z:.2f}")
-        return {"mass": new_mass, "roll_inertia": new_roll_inertia, "pitch_inertia": new_pitch_inertia, "yaw_inertia": new_yaw_inertia, "volume": new_volume, "joints": scaled_joints, "fairleads": scaled_fairleads, "tower_base_z": scaled_tower_base_z, "platform_ref_z": scaled_platform_ref_z}
+        
+        return {
+            "mass": new_mass, 
+            "roll_inertia": new_roll_inertia, 
+            "pitch_inertia": new_pitch_inertia, 
+            "yaw_inertia": new_yaw_inertia, 
+            "volume": new_volume, 
+            "joints": scaled_joints, 
+            "fairleads": scaled_fairleads, 
+            "tower_base_z": scaled_tower_base_z, 
+            "platform_ref_z": scaled_platform_ref_z
+        }
 
     def _log(self, msg: str): self.log.append(msg)
+    
     def _get_val(self, data: Dict[str, str], key: str) -> float:
         line = data.get(key)
-        if line: return float(line.strip().split()[0])
+        if line: 
+            try:
+                return float(line.strip().split()[0])
+            except (ValueError, IndexError):
+                self._log(f"WARNING: Could not parse float from line for key '{key}': {line}")
+                return 0.0
         self._log(f"WARNING: Key '{key}' not found."); return 0.0
 
     def _parse_file_to_dict_robust(self, file_path: Path) -> Dict[str, str]:
@@ -81,19 +112,22 @@ class PlatformModel:
             if m: data[m.group(2)] = line
         return data
 
-    # --- DEFINITIVE FIX: A more robust table parser that knows when to stop ---
     def _parse_table_from_lines(self, data_dict: Dict[str, str], count_key: str, columns: List[str]) -> pd.DataFrame:
-        """
-        Parses a table from the raw file lines, stopping when it hits the next section.
-        """
         all_lines = list(data_dict.values())
         line_with_count = data_dict.get(count_key)
         if not line_with_count:
             self._log(f"ERROR: Count key '{count_key}' not found for table parsing.")
             return pd.DataFrame(columns=columns)
         
-        num_rows = int(line_with_count.strip().split()[0])
-        
+        try:
+            num_rows = int(line_with_count.strip().split()[0])
+        except (ValueError, IndexError):
+            self._log(f"ERROR: Could not parse row count for key '{count_key}'.")
+            return pd.DataFrame(columns=columns)
+
+        if num_rows == 0:
+            return pd.DataFrame(columns=columns)
+            
         try:
             start_search_index = all_lines.index(line_with_count) + 1
         except ValueError:
@@ -113,42 +147,102 @@ class PlatformModel:
         table_lines_data = []
         for i in range(table_start_index, len(all_lines)):
             line = all_lines[i].strip()
+            if len(table_lines_data) >= num_rows: break
+            if line.startswith('---') or 'MEMBER CROSS-SECTION' in line.upper(): break
             
-            # STOP CONDITION 1: We found the next section header.
-            if line.startswith('---') or 'MEMBER CROSS-SECTION' in line.upper():
-                self._log(f"  -> Found end of table for '{count_key}' at next section header.")
-                break
-            
-            # STOP CONDITION 2: We have already found all the rows we need.
-            if len(table_lines_data) >= num_rows:
-                break
-
-            # VALIDATION: Check if it looks like a valid data line for *this* table.
-            if line and line.split()[0].isdigit():
-                parts = line.split()
-                # This explicitly rejects lines that don't have the correct number of columns.
-                if len(parts) == len(columns):
-                    table_lines_data.append(parts)
+            parts = line.split()
+            if line and (parts[0].isdigit() or (parts[0].startswith('-') and parts[0][1:].isdigit())):
+                if len(parts) >= len(columns):
+                    table_lines_data.append(parts[:len(columns)])
                 else:
-                    self._log(f"  -> Skipping malformed line in table '{count_key}': '{line}' (Expected {len(columns)} parts, found {len(parts)})")
+                    self._log(f"  -> Skipping malformed line in table '{count_key}': '{line}'")
 
         if len(table_lines_data) != num_rows:
             self._log(f"WARNING: Found {len(table_lines_data)} rows but expected {num_rows} for table '{count_key}'.")
 
-        return pd.DataFrame(table_lines_data, columns=columns).apply(pd.to_numeric)
+        df = pd.DataFrame(table_lines_data, columns=columns)
+        for c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        return df
 
     def _parse_fairleads_from_md(self) -> np.ndarray:
         fairleads = []
         in_points_section = False
         for line in self.md_lines:
             line_upper = line.strip().upper()
-            if line_upper.startswith('---'): in_points_section = 'POINTS' in line_upper; continue
+            if line_upper.startswith('---'): 
+                in_points_section = 'POINTS' in line_upper
+                continue
             if in_points_section and "VESSEL" in line_upper:
                 parts = line.strip().split()
                 if len(parts) >= 5:
                     try: fairleads.append([float(p) for p in parts[2:5]])
                     except ValueError: continue
         return np.array(fairleads)
+
+# --- FIX 1: Stronger HydroDyn joints replacement (Helper Functions) ---
+def _find_hydrodyn_joints_region(lines: list) -> tuple[int,int,int,int]:
+    # Find 'NJoints' line
+    n_joints_idx = next(i for i,l in enumerate(lines) if re.search(r'\bNJoints\b', l))
+    # Find 'JointID' header after it
+    joint_header_idx = next(i for i,l in enumerate(lines[n_joints_idx+1:], start=n_joints_idx+1)
+                            if re.search(r'\bJointID\b', l))
+    # Units line is the next line
+    units_idx = joint_header_idx + 1
+    # Find the next section start (line of dashes or contains 'CROSS-SECTION' or 'MEMBER')
+    end_idx = None
+    for i in range(units_idx+1, len(lines)):
+        s = lines[i].strip()
+        if s.startswith('---') or re.search(r'\bCROSS-SECTION\b', s, re.IGNORECASE) or re.search(r'\bMEMBER\b', s, re.IGNORECASE):
+            end_idx = i
+            break
+    if end_idx is None:
+        raise RuntimeError("Cannot find end of HydroDyn Joints table.")
+    return n_joints_idx, joint_header_idx, units_idx, end_idx
+
+def _fmt_joint_line(jid: int, x: float, y: float, z: float, axid: int, ovrlp: int) -> str:
+    # Widths chosen to mimic typical NREL formatting, with ample spacing
+    # ID in 6 cols, coordinates in 13.5f, then IDs in 12 cols
+    return f"{jid:6d}{x:13.5f}{y:13.5f}{z:13.5f}{axid:12d}{ovrlp:12d}"
+
+def write_hydrodyn_joints_and_scalars(hd_path: Path, joints_df, volume: float, refzt: float, logger=None):
+    lines = hd_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+
+    # Update PtfmVol0 and PtfmRefzt exactly as in your baseline (value first, then the token)
+    for i, l in enumerate(lines):
+        if re.search(r'\bPtfmVol0\b', l):
+            # scientific notation, uppercase E, width 12-15 is ok; baseline shows 1.01455E+04 aligned
+            lines[i] = f"{volume:>12.5E}     PtfmVol0"
+        elif re.search(r'\bPtfmRefzt\b', l):
+            # plain fixed float
+            lines[i] = f"{refzt:>12.5f}         PtfmRefzt"
+
+    # Joints region
+    n_joints_idx, header_idx, units_idx, end_idx = _find_hydrodyn_joints_region(lines)
+
+    # Ensure numeric types
+    required_cols = ['id','x','y','z','type','overlap']
+    for c in required_cols:
+        if c not in joints_df.columns:
+            raise ValueError(f"Missing column '{c}' in joints_df.")
+        joints_df[c] = pd.to_numeric(joints_df[c], errors='coerce')
+
+    # New data lines
+    out_lines = []
+    for _, row in joints_df.iterrows():
+        out_lines.append(_fmt_joint_line(int(row['id']), float(row['x']), float(row['y']), float(row['z']),
+                                         int(row['type']), int(row['overlap'])))
+
+    # Update NJoints count at the beginning of the line (keep the rest intact)
+    nj = len(out_lines)
+    lines[n_joints_idx] = re.sub(r'^\s*\d+', f"{nj:>12d}", lines[n_joints_idx])
+
+    # Rebuild file: keep header+units, replace data block, keep the rest
+    new_lines = lines[:units_idx+1] + out_lines + lines[end_idx:]
+    hd_path.write_text('\n'.join(new_lines) + '\n', encoding='utf-8', errors='ignore')
+
+    if logger:
+        logger(f"HydroDyn updated: NJoints={nj}, PtfmVol0={volume:.5E}, PtfmRefzt={refzt:.5f}")
 
 def update_files_for_case(case_dir: Path, data: Dict[str, Any], model: 'PlatformModel'):
     """
@@ -160,47 +254,31 @@ def update_files_for_case(case_dir: Path, data: Dict[str, Any], model: 'Platform
         ed_path = case_dir / model.ed_file_name
         lines = ed_path.read_text(encoding='utf-8', errors='ignore').splitlines()
         for i, line in enumerate(lines):
-            if "PtfmMass" in line: lines[i] = f"{data['mass']:<14.7E}   PtfmMass"
-            elif "PtfmRIner" in line: lines[i] = f"{data['roll_inertia']:<14.7E}   PtfmRIner"
-            elif "PtfmPIner" in line: lines[i] = f"{data['pitch_inertia']:<14.7E}   PtfmPIner"
-            elif "PtfmYIner" in line: lines[i] = f"{data['yaw_inertia']:<14.7E}   PtfmYIner"
-            elif "TowerBsHt" in line: lines[i] = f"{data['tower_base_z']:<14.7E}   TowerBsHt"
+            # --- FIX 3: ElastoDyn numeric formatting ---
+            if "PtfmMass" in line:    lines[i] = f"{data['mass']:>15.7E}   PtfmMass"
+            elif "PtfmRIner" in line: lines[i] = f"{data['roll_inertia']:>15.7E}   PtfmRIner"
+            elif "PtfmPIner" in line: lines[i] = f"{data['pitch_inertia']:>15.7E}   PtfmPIner"
+            elif "PtfmYIner" in line: lines[i] = f"{data['yaw_inertia']:>15.7E}   PtfmYIner"
+            elif "TowerBsHt" in line: lines[i] = f"{data['tower_base_z']:>15.7E}   TowerBsHt"
         ed_path.write_text('\n'.join(lines) + '\n', encoding='utf-8', errors='ignore')
     except Exception as e:
         model._log(f"WARNING: Could not update ElastoDyn file. Error: {e}")
 
-    # --- Update HydroDyn File ---
+    # --- FIX 2: Use the helper from update_files_for_case() ---
     try:
         hd_path = case_dir / model.hd_file_name
-        lines = hd_path.read_text(encoding='utf-8', errors='ignore').splitlines()
-
-        # Find the line indices for key parameters and the specific joints table
-        n_joints_line_idx = next(i for i, line in enumerate(lines) if "NJoints" in line)
-        
-        # --- DEFINITIVE FIX: Search for the header *after* the NJoints line ---
-        units_header_idx = next(i for i, line in enumerate(lines) if i > n_joints_line_idx and line.strip().startswith('(-)') and 'JointID' in lines[i-1])
-
-        vol_line_idx = next(i for i, line in enumerate(lines) if "PtfmVol0" in line)
-        ref_z_line_idx = next(i for i, line in enumerate(lines) if "PtfmRefzt" in line)
-
-        original_n_joints = int(lines[n_joints_line_idx].strip().split()[0])
-        table_start_index = units_header_idx + 1
-        table_end_index = table_start_index + original_n_joints
-
-        new_joint_lines = [f"{int(row['id']):<5d} {row['x']:>11.5f} {row['y']:>11.5f} {row['z']:>11.5f} {int(row['type']):>10d} {int(row['overlap']):>12d}" for _, row in data['joints'].iterrows()]
-
-        lines[n_joints_line_idx] = f"{len(new_joint_lines):<13d}   NJoints"
-        lines[vol_line_idx] = f"{data['volume']:<13.5E}   PtfmVol0"
-        lines[ref_z_line_idx] = f"{data['platform_ref_z']:<13.5f}   PtfmRefzt"
-        
-        # Reconstruct the file content by splicing the new table
-        final_lines = lines[:table_start_index] + new_joint_lines + lines[table_end_index:]
-        hd_path.write_text('\n'.join(final_lines) + '\n', encoding='utf-8', errors='ignore')
-
+        # Write joints + volume/reference z with strict formatting
+        write_hydrodyn_joints_and_scalars(
+            hd_path=hd_path,
+            joints_df=data['joints'],
+            volume=float(data['volume']),
+            refzt=float(data['platform_ref_z']),
+            logger=model._log
+        )
     except Exception as e:
         model._log(f"FATAL: Could not update HydroDyn file. Error: {e}\n{traceback.format_exc()}")
 
-    # --- Update MoorDyn File ---
+    # --- Update MoorDyn File --- (Keep this part unchanged)
     try:
         md_path = case_dir / model.md_file_name
         if md_path.exists() and 'fairleads' in data and data['fairleads'].size > 0:
@@ -214,6 +292,6 @@ def update_files_for_case(case_dir: Path, data: Dict[str, Any], model: 'Platform
                         lines[line_idx] = " ".join(parts)
                 md_path.write_text('\n'.join(lines) + '\n', encoding='utf-8', errors='ignore')
             else:
-                model._log(f"WARNING: Mismatch in MoorDyn fairleads. Not updated.")
+                model._log(f"WARNING: Mismatch in MoorDyn fairleads ({len(vessel_point_indices)} found vs {data['fairleads'].shape[0]} expected). Not updated.")
     except Exception as e:
         model._log(f"WARNING: Could not update MoorDyn file. Error: {e}")
