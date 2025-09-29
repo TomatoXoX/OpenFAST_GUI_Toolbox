@@ -354,6 +354,9 @@ class PlottingRunner:
 # #############################################################################
 # --- BEGIN: NEW d'Alembert Implementation ---
 # #############################################################################
+# #############################################################################
+# --- BEGIN: NEW d'Alembert Implementation ---
+# #############################################################################
 class DalembertLogHandler(logging.Handler):
     def __init__(self, message_queue, case_name, log_type):
         super().__init__()
@@ -416,7 +419,7 @@ class DalembertRunner:
 
             refs = _find_fst_refs(args.fst, self.logger)
             geo = self._parse_elastodyn_geometry(refs['EDFile'])
-            fairleads = self._parse_moordyn_points(refs['MooringFile'])
+            fairleads, anchors = self._parse_moordyn_points(refs['MooringFile'])
             PRP, yaw_xyz, twrbase_xyz = np.zeros(3), geo['YawBearing'], geo['TowerBase']
 
             df = self._parse_glue_text(args.glue_out)
@@ -426,16 +429,15 @@ class DalembertRunner:
             if df_md is not None and 'time' in df_md.columns:
                 df_md = df_md.set_index('time')
 
-            # --- FIX 1: Pass the 'geo' object to the calculation method ---
-            self._perform_dalembert_calculations(df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time, geo)
+            # --- Pass the 'geo' and 'anchors' objects to the calculation method ---
+            self._perform_dalembert_calculations(df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, anchors, analysis_start_time, geo)
 
         except Exception as e:
             self.logger.error(f"FATAL ERROR in d'Alembert analysis: {e}\n{traceback.format_exc()}")
         finally:
             self.logger.info("========== d'Alembert staticization: END ==========")
     
-    # --- FIX 1: Modified signature to accept the 'geo' object ---
-    def _perform_dalembert_calculations(self, df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time, geo):
+    def _perform_dalembert_calculations(self, df: pd.DataFrame, df_md: Optional[pd.DataFrame], args: Any, m: float, r_com: np.ndarray, I: np.ndarray, PRP: np.ndarray, yaw_xyz: np.ndarray, twrbase_xyz: np.ndarray, fairleads: Dict[int, np.ndarray], anchors: Dict[int, np.ndarray], analysis_start_time: float, geo: Dict):
         hydro_cols=['hydrofxi','hydrofyi','hydrofzi','hydromxi','hydromyi','hydromzi']
         
         if all(c in df.columns for c in ['twrbsfxt','twrbsfyt','twrbsfzt','twrbsmxt','twrbsmyt','twrbsmzt']):
@@ -461,21 +463,62 @@ class DalembertRunner:
             ED_F_loc=row[edF].values
             ED_M_loc=row[edM].values
 
-            R = self._rotmat_from_rpy_deg(row['ptfmroll'], row['ptfmpitch'], row['ptfmyaw']) if args.rotate_ed else np.eye(3)
-            ED_F = R @ ED_F_loc
-            ED_M = R @ ED_M_loc
+            R_plat = self._rotmat_from_rpy_deg(row['ptfmroll'], row['ptfmpitch'], row['ptfmyaw'])
+            if args.rotate_ed:
+                ED_F = R_plat @ ED_F_loc
+                ED_M = R_plat @ ED_M_loc
+            else:
+                ED_F = ED_F_loc
+                ED_M = ED_M_loc
             ED_M_at_PRP = ED_M + np.cross((PRP - ed_point), ED_F)
 
-            Moor_F=np.zeros(3); Moor_M=np.zeros(3); fair_entries=[]
-            for k, rk in fairleads:
+            # --- CORRECTED: Mooring force and moment calculation logic ---
+            Moor_F = np.zeros(3)
+            Moor_M = np.zeros(3)
+            fair_entries = []
+            platform_pos = row[['ptfmsurge', 'ptfmsway', 'ptfmheave']].values
+
+            for k, rk_local in sorted(fairleads.items()):  # k=line number, rk_local=fairlead coords in platform frame
                 Fk = np.zeros(3)
-                md_cols = [f'fairten{k}x', f'fairten{k}y', f'fairten{k}z']
+                
+                # Method 1 (Preferred): Find force components directly from output columns.
+                md_cols = [f'line{k}fx', f'line{k}fy', f'line{k}fz']
+                
                 if all(c in row.index for c in md_cols):
                     Fk = row[md_cols].values
                 elif df_md is not None and all(c in df_md.columns for c in md_cols):
                     idx = (df_md.index - t).abs().argmin()
                     Fk = df_md.iloc[idx][md_cols].values
-                Moor_F += Fk; Moor_M += np.cross(rk, Fk); fair_entries.append((k, rk, Fk))
+                else:
+                    # Method 2 (Fallback): Calculate components from tension magnitude and geometry.
+                    tension_col = f'fairten{k}'
+                    if tension_col in row.index:
+                        tension_mag = row[tension_col]
+                        ak_global = anchors.get(k)
+                        
+                        if ak_global is not None:
+                            # Calculate instantaneous global position of the fairlead
+                            rk_global = platform_pos + R_plat @ rk_local
+                            direction_vec = ak_global - rk_global
+                            norm = np.linalg.norm(direction_vec)
+                            if norm > 1e-6:
+                                Fk = tension_mag * (direction_vec / norm)
+                            else:
+                                self.logger.warning(f"t={t:.2f}, Line {k}: Fairlead and anchor positions are nearly coincident. Cannot calculate force direction.")
+                        else:
+                            self.logger.warning(f"t={t:.2f}, Line {k}: Anchor position not found. Cannot calculate force components.")
+                    else:
+                        self.logger.warning(f"t={t:.2f}, Line {k}: Could not find force component columns (e.g., '{md_cols[0]}') or tension magnitude column ('{tension_col}'). Mooring force for this line will be zero.")
+                
+                # The moment calculation must use vectors in the same coordinate system.
+                # Here we calculate the moment about the global origin (PRP) using the
+                # global fairlead position and the global force vector.
+                rk_global = platform_pos + R_plat @ rk_local
+                Moor_M += np.cross(rk_global, Fk)
+
+                Moor_F += Fk
+                fair_entries.append((k, rk_local, Fk)) # Store local position for the 'add' function display
+            # --- END: Mooring force calculation logic ---
 
             F_ext = H_F + Moor_F + ED_F
             M_ext_at_PRP = H_M + Moor_M + ED_M_at_PRP
@@ -578,25 +621,76 @@ class DalembertRunner:
             return None
         return {'YawBearing': np.array([0.,0.,fget('TowerHt') or 0.0]), 'TowerBase': np.array([0.,0.,fget('TowerBsHt') or 0.0])}
 
-    def _parse_moordyn_points(self, md_path):
-        self.logger.info(f"Parsing MoorDyn fairlead points: {md_path}")
-        lines=_read_lines(md_path, self.logger)
-        pts=[]; in_points=False; in_lines=False; line_defs=[]
-        for s in lines:
-            s=s.strip().upper()
-            if s.startswith('---'):
-                in_points = 'POINTS' in s
-                in_lines = 'LINES' in s
-            elif in_points:
-                tok=s.split()
-                if len(tok)>=5 and tok[0].isdigit(): pts.append((int(tok[0]),tok[1],float(tok[2]),float(tok[3]),float(tok[4])))
-            elif in_lines:
-                tok=s.split()
-                if len(tok)>=7 and tok[0].isdigit(): line_defs.append((int(tok[0]),int(tok[2]),int(tok[3])))
+    def _parse_moordyn_points(self, md_path: str) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
+        """
+        Parses a MoorDyn input file to extract fairlead and anchor locations.
+
+        This function reads the POINTS and LINES sections to build a map of the
+        mooring system geometry. It correctly associates each line number with its
+        corresponding vessel fairlead (local coordinates) and fixed anchor
+        (global coordinates).
+
+        Args:
+            md_path: The file path to the MoorDyn input file.
+
+        Returns:
+            A tuple containing two dictionaries:
+            - fairleads: A dict mapping line ID (int) to fairlead position (np.ndarray).
+            - anchors: A dict mapping line ID (int) to anchor position (np.ndarray).
+        """
+        self.logger.info(f"Parsing MoorDyn fairlead and anchor points: {md_path}")
+        lines = _read_lines(md_path, self.logger)
         
-        vessel={pid:(x,y,z) for pid,att,x,y,z in pts if att=='VESSEL'}
-        fair_pids = sorted([a if a in vessel else b for _,a,b in line_defs if a in vessel or b in vessel])
-        return [(i, np.array(vessel[pid])) for i, pid in enumerate(fair_pids, 1)]
+        points_data = []
+        lines_data = []
+        in_points_section = False
+        in_lines_section = False
+
+        for s in lines:
+            s_upper = s.strip().upper()
+            if s_upper.startswith('---'):
+                in_points_section = 'POINTS' in s_upper
+                in_lines_section = 'LINES' in s_upper
+                continue
+
+            parts = s.strip().split()
+            if not parts or not parts[0].isdigit():
+                continue
+
+            if in_points_section and len(parts) >= 5:
+                # Store Point ID, Attachment Type, X, Y, Z
+                points_data.append((int(parts[0]), parts[1].upper(), float(parts[2]), float(parts[3]), float(parts[4])))
+            elif in_lines_section and len(parts) >= 4:
+                # Store Line ID, AttachA ID, AttachB ID
+                lines_data.append((int(parts[0]), int(parts[2]), int(parts[3])))
+
+        # Create a map of all points by their ID
+        all_points_map = {pid: {'att': att, 'pos': np.array([x, y, z])} for pid, att, x, y, z in points_data}
+
+        fairleads = {}
+        anchors = {}
+
+        # Iterate through line definitions to connect anchors and fairleads
+        for line_id, pida, pidb in lines_data:
+            point_a = all_points_map.get(pida)
+            point_b = all_points_map.get(pidb)
+
+            if not point_a or not point_b:
+                self.logger.warning(f"Skipping Line {line_id} due to missing point definition for ID {pida} or {pidb}.")
+                continue
+
+            # Assign points based on their attachment type
+            if point_a['att'] == 'VESSEL' and point_b['att'] == 'FIXED':
+                fairleads[line_id] = point_a['pos']
+                anchors[line_id] = point_b['pos']
+            elif point_b['att'] == 'VESSEL' and point_a['att'] == 'FIXED':
+                fairleads[line_id] = point_b['pos']
+                anchors[line_id] = point_a['pos']
+            else:
+                self.logger.warning(f"Line {line_id} does not connect a 'VESSEL' point to a 'FIXED' point. Skipping.")
+        
+        self.logger.info(f"Found {len(fairleads)} fairleads and {len(anchors)} anchors.")
+        return fairleads, anchors
 
     def _vnorm(self, v): return float(np.linalg.norm(np.asarray(v,float)))
     def _rotmat_from_rpy_deg(self, r,p,y):
@@ -696,7 +790,6 @@ class DalembertRunner:
                     Ic_local = np.diag([0, (1/12)*m_seg*L**2, (1/12)*m_seg*L**2])
                     Ms.append(m_seg); Rs.append(r_global); Is.append(R_blade @ Ic_local @ R_blade.T)
             return Ms, Rs, Is
-
 # #############################################################################
 # --- END: NEW d'Alembert Implementation ---
 # #############################################################################
