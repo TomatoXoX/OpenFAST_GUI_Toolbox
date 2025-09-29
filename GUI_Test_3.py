@@ -282,9 +282,12 @@ class PlottingRunner:
         series_label, series_unit = {}, {}
         time_unit = self.get_unit_with_fallback(time_col, csv_units_map)
         x_label = f"{self.strip_units(time_col)}{f' [{time_unit}]' if time_unit else ''}"
-        vector_bases = ['TwrBsF', 'TwrBsM', 'HydroF', 'HydroM', 'FAIRTEN1', 'FAIRTEN2', 'FAIRTEN3']
-        scalar_channels = ['PtfmRoll', 'PtfmPitch', 'PtfmYaw', 'PtfmSurge', 'PtfmSway', 'PtfmHeave']
-        channels_to_plot, fairten_mag_cols, found_scalars = [], {}, {}
+        
+        # --- FIX: Correctly categorize FairTen channels as scalars, not vectors ---
+        vector_bases = ['TwrBsF', 'TwrBsM', 'HydroF', 'HydroM']
+        scalar_channels = ['PtfmRoll', 'PtfmPitch', 'PtfmYaw', 'PtfmSurge', 'PtfmSway', 'PtfmHeave', 'FairTen1', 'FairTen2', 'FairTen3']
+        
+        channels_to_plot, found_scalars = [], {}
 
         for base in vector_bases:
             self.log(f"Searching for vector components for base: '{base}'")
@@ -296,22 +299,26 @@ class PlottingRunner:
                     mag_vals = np.sqrt(pd.to_numeric(df[x_col],errors='coerce')**2 + pd.to_numeric(df[y_col],errors='coerce')**2 + pd.to_numeric(df[z_col],errors='coerce')**2)
                     mag_col = f"{base}_Magnitude"; df[mag_col] = mag_vals; channels_to_plot.append(mag_col)
                     series_label[mag_col], series_unit[mag_col] = mag_col, self.get_unit_with_fallback(x_col, csv_units_map)
-                    if base.upper().startswith("FAIRTEN"): fairten_mag_cols[base.upper()] = mag_col
                 except Exception as e: self.log(f"Warning: Failed to compute magnitude for '{base}': {e}")
             else:
                 self.log(f"  -> FAILED to find all three components for '{base}'. Skipping magnitude calculation.")
 
         for channel in scalar_channels:
+            # Find columns that start with the channel name (case-insensitive)
             matches = [c for c in df.columns if str(c).strip().lower().startswith(channel.lower())]
             if matches:
-                col = matches[0]; channels_to_plot.append(col)
+                col = matches[0] # Take the first match
+                channels_to_plot.append(col)
                 series_label[col], series_unit[col] = self.strip_units(col), self.get_unit_with_fallback(col, csv_units_map)
+                # Store the found column name using the original channel name as the key
                 found_scalars[channel] = col
 
         if not channels_to_plot: self.log("No channels were found to plot."); return
         os.makedirs(output_dir, exist_ok=True); self.log(f"Generating plots...")
         plt.style.use('ggplot'); case_suffix = f" -- {case_name}" if case_name else ""
 
+        # This loop for individual plots remains the same and will now correctly
+        # plot FairTen1, FairTen2, etc. as individual scalar plots.
         for channel in channels_to_plot:
             fig, ax = plt.subplots(figsize=(12, 6))
             try: (h,) = ax.plot(df[time_col], df[channel], label=series_label.get(channel, self.strip_units(channel)))
@@ -326,12 +333,18 @@ class PlottingRunner:
             except Exception as e: self.log(f"Error saving plot for '{channel}': {e}")
             plt.close(fig)
 
+        # Group plots
         rpy_cols = [c for c in [found_scalars.get(k) for k in ['PtfmRoll', 'PtfmPitch', 'PtfmYaw']] if c]
         if rpy_cols: self.plot_group(time_col, df, rpy_cols, series_label, series_unit, "Platform Roll/Pitch/Yaw", x_label, "deg", mean_start, time_unit, case_suffix, output_dir, "Ptfm_RollPitchYaw", **kwargs)
+        
         ssh_cols = [c for c in [found_scalars.get(k) for k in ['PtfmSurge', 'PtfmSway', 'PtfmHeave']] if c]
         if ssh_cols: self.plot_group(time_col, df, ssh_cols, series_label, series_unit, "Platform Surge/Sway/Heave", x_label, "m", mean_start, time_unit, case_suffix, output_dir, "Ptfm_SurgeSwayHeave", **kwargs)
-        fair_cols = [c for c in [fairten_mag_cols.get(k) for k in ['FAIRTEN1', 'FAIRTEN2', 'FAIRTEN3']] if c]
-        if fair_cols: self.plot_group(time_col, df, fair_cols, series_label, series_unit, "Fairlead Tension Magnitudes", x_label, "N", mean_start, time_unit, case_suffix, output_dir, "FAIRTEN_Magnitudes", **kwargs)
+        
+        # --- FIX: New, cleaner logic for gathering fairlead tension columns for the group plot ---
+        fair_cols = [c for c in [found_scalars.get(k) for k in ['FairTen1', 'FairTen2', 'FairTen3']] if c]
+        if fair_cols: 
+            self.plot_group(time_col, df, fair_cols, series_label, series_unit, "Fairlead Tensions", x_label, "N", mean_start, time_unit, case_suffix, output_dir, "Fairlead_Tensions", **kwargs)
+        
         self.log("Plotting complete.")
 
 # #############################################################################
@@ -413,14 +426,16 @@ class DalembertRunner:
             if df_md is not None and 'time' in df_md.columns:
                 df_md = df_md.set_index('time')
 
-            self._perform_dalembert_calculations(df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time)
+            # --- FIX 1: Pass the 'geo' object to the calculation method ---
+            self._perform_dalembert_calculations(df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time, geo)
 
         except Exception as e:
             self.logger.error(f"FATAL ERROR in d'Alembert analysis: {e}\n{traceback.format_exc()}")
         finally:
             self.logger.info("========== d'Alembert staticization: END ==========")
     
-    def _perform_dalembert_calculations(self, df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time):
+    # --- FIX 1: Modified signature to accept the 'geo' object ---
+    def _perform_dalembert_calculations(self, df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time, geo):
         hydro_cols=['hydrofxi','hydrofyi','hydrofzi','hydromxi','hydromyi','hydromzi']
         
         if all(c in df.columns for c in ['twrbsfxt','twrbsfyt','twrbsfzt','twrbsmxt','twrbsmyt','twrbsmzt']):
@@ -916,7 +931,6 @@ class OpenFASTTestCaseGUI:
                 self.log(f"    Rewrote internal paths in {dest_path.name}")
         except Exception as e:
             self.log(f"    Warning: Could not read/rewrite {source_path.name}. Copying directly. Error: {e}")
-            shutil.copy2(source_path, dest_path)
     def resolve_file_path(self, base_dir, filename):
         if not filename or filename.lower() in ['unused', 'none', '']: return None
         filename = filename.strip('"').strip("'")
@@ -1253,16 +1267,20 @@ class OpenFASTTestCaseGUI:
                 ed_key = next((k for k, v in self.file_structure.items() if 'elastodyn' in v['path'].name.lower()), None)
                 hd_key = next((k for k, v in self.file_structure.items() if 'hydrodyn' in v['path'].name.lower()), None)
                 md_key = next((k for k, v in self.file_structure.items() if 'moordyn' in v['path'].name.lower()), None)
+                # NEW: Find the AeroDyn file key
+                ad_key = next((k for k, v in self.file_structure.items() if 'aerodyn' in v['path'].name.lower()), None)
 
-                if not all([ed_key, hd_key, md_key]):
-                    raise FileNotFoundError("Could not find ElastoDyn, HydroDyn, or MoorDyn files in the discovered file structure. Please re-run discovery.")
+                # MODIFIED: Check for all required files, including AeroDyn
+                if not all([ed_key, hd_key, md_key, ad_key]):
+                    raise FileNotFoundError("Could not find ElastoDyn, HydroDyn, MoorDyn, or AeroDyn files in the discovered file structure. Please re-run discovery.")
 
                 ed_path = self.file_structure[ed_key]['path']
                 hd_path = self.file_structure[hd_key]['path']
                 md_path = self.file_structure[md_key]['path']
+                ad_path = self.file_structure[ad_key]['path'] # NEW
                 
-                # Pass the resolved paths directly to the engine
-                model = engine.PlatformModel(ed_path=ed_path, hd_path=hd_path, md_path=md_path)
+                # MODIFIED: Pass the resolved paths directly to the engine, including ad_path
+                model = engine.PlatformModel(ed_path=ed_path, hd_path=hd_path, md_path=md_path, ad_path=ad_path)
 
             if model:
                 for msg in model.log: self.log(f"  [Engine Discovery] {msg}")
