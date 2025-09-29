@@ -18,7 +18,12 @@ from pathlib import Path
 from datetime import datetime
 from math import cos, sin, radians
 from typing import List, Tuple, Dict, Any, Optional
-
+# --- NEW: Import the ADVANCED, AUTOMATIC geometry engine ---
+try:
+    import advanced_geometry_engine as engine
+    GEOMETRY_ENGINE_AVAILABLE = True
+except ImportError:
+    GEOMETRY_ENGINE_AVAILABLE = False
 # Suppress the deprecation warning from matplotlib about findfont
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 
@@ -702,7 +707,15 @@ class OpenFASTTestCaseGUI:
         self.run_button, self.run_job_queue, self.run_progress_lock, self.run_completed_cases, self.run_total_cases, self.run_cases = None, queue.Queue(), threading.Lock(), 0, 0, {}
         self.post_proc_button, self.post_proc_job_queue, self.post_proc_progress_lock, self.post_proc_completed_cases, self.post_proc_total_cases, self.post_proc_cases = None, queue.Queue(), threading.Lock(), 0, 0, {}
         self.run_convert_csv, self.run_dalembert, self.run_plotting = tk.BooleanVar(value=True), tk.BooleanVar(value=True), tk.BooleanVar(value=True)
-        
+        self.geom_vary_height_enabled = tk.BooleanVar(value=False)
+        self.geom_height_start_scale = tk.DoubleVar(value=0.9)
+        self.geom_height_end_scale = tk.DoubleVar(value=1.1)
+        self.geom_height_steps = tk.IntVar(value=3)
+
+        self.geom_vary_diam_enabled = tk.BooleanVar(value=False)
+        self.geom_diam_start_scale = tk.DoubleVar(value=0.9)
+        self.geom_diam_end_scale = tk.DoubleVar(value=1.1)
+        self.geom_diam_steps = tk.IntVar(value=3)
         # FIX: Add a dedicated lock for plotting to prevent multithreading issues
         self.plotting_lock = threading.Lock()
 
@@ -714,6 +727,7 @@ class OpenFASTTestCaseGUI:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         self.create_file_selection_section(scrollable_frame); self.create_test_config_section(scrollable_frame)
+        self.create_geometry_section(scrollable_frame)
         self.create_parameter_discovery_section(scrollable_frame); self.create_parameter_section(scrollable_frame)
         self.create_action_section(scrollable_frame); self.create_log_section(scrollable_frame, "setup_log")
         
@@ -795,7 +809,50 @@ class OpenFASTTestCaseGUI:
         self.distribution_var = tk.StringVar(value="grid_search")
         dist_combo = ttk.Combobox(frame, textvariable=self.distribution_var, values=["grid_search", "csv_columnwise", "latin_hypercube", "uniform", "normal"], width=15)
         dist_combo.grid(row=0, column=3, sticky=tk.W, padx=5); dist_combo.bind("<<ComboboxSelected>>", self.on_distribution_change)
-        
+    # --- NEW: Method to create the Geometry UI ---
+    def create_geometry_section(self, parent):
+        """Creates the UI section for configuring geometric variations."""
+        geom_frame = ttk.LabelFrame(parent, text="Geometric Variations (Automatic)", padding="10")
+        geom_frame.pack(fill='x', pady=5, padx=5)
+
+        if not GEOMETRY_ENGINE_AVAILABLE:
+            ttk.Label(geom_frame, text="Engine not found. Please ensure 'advanced_geometry_engine.py' is in the same directory.", foreground="red").pack()
+            return
+
+        # --- Height Variation Sub-section ---
+        height_frame = ttk.LabelFrame(geom_frame, text="Height Scaling", padding="5")
+        height_frame.pack(fill='x', expand=True, pady=5)
+
+        enable_height_check = ttk.Checkbutton(height_frame, text="Enable Height Variation", variable=self.geom_vary_height_enabled, command=self.update_total_cases)
+        enable_height_check.grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 5))
+
+        ttk.Label(height_frame, text="Start Scale:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        ttk.Entry(height_frame, textvariable=self.geom_height_start_scale, width=8).grid(row=1, column=1, sticky='w', padx=5)
+        ttk.Label(height_frame, text="End Scale:").grid(row=1, column=2, sticky='w', padx=5)
+        ttk.Entry(height_frame, textvariable=self.geom_height_end_scale, width=8).grid(row=1, column=3, sticky='w', padx=5)
+        ttk.Label(height_frame, text="Steps:").grid(row=1, column=4, sticky='w', padx=5)
+        ttk.Spinbox(height_frame, from_=1, to=100, textvariable=self.geom_height_steps, width=5).grid(row=1, column=5, sticky='w', padx=5)
+
+        # --- Diameter Variation Sub-section ---
+        diam_frame = ttk.LabelFrame(geom_frame, text="Diameter Scaling", padding="5")
+        diam_frame.pack(fill='x', expand=True, pady=5)
+
+        enable_diam_check = ttk.Checkbutton(diam_frame, text="Enable Diameter Variation", variable=self.geom_vary_diam_enabled, command=self.update_total_cases)
+        enable_diam_check.grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 5))
+
+        ttk.Label(diam_frame, text="Start Scale:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        ttk.Entry(diam_frame, textvariable=self.geom_diam_start_scale, width=8).grid(row=1, column=1, sticky='w', padx=5)
+        ttk.Label(diam_frame, text="End Scale:").grid(row=1, column=2, sticky='w', padx=5)
+        ttk.Entry(diam_frame, textvariable=self.geom_diam_end_scale, width=8).grid(row=1, column=3, sticky='w', padx=5)
+        ttk.Label(diam_frame, text="Steps:").grid(row=1, column=4, sticky='w', padx=5)
+        ttk.Spinbox(diam_frame, from_=1, to=100, textvariable=self.geom_diam_steps, width=5).grid(row=1, column=5, sticky='w', padx=5)
+
+        # Trace changes to update case count automatically
+        self.geom_vary_height_enabled.trace_add("write", self.update_total_cases)
+        self.geom_height_steps.trace_add("write", self.update_total_cases)
+        self.geom_vary_diam_enabled.trace_add("write", self.update_total_cases)
+        self.geom_diam_steps.trace_add("write", self.update_total_cases)
+    # --- END NEW ---
     def create_parameter_discovery_section(self, parent):
         frame = ttk.LabelFrame(parent, text="Parameter Discovery", padding="10"); frame.pack(fill='x', pady=5, padx=5)
         ttk.Button(frame, text="Discover Parameters", command=self.discover_parameters, style="Accent.TButton").pack(side='left', padx=5)
@@ -823,7 +880,43 @@ class OpenFASTTestCaseGUI:
         log_widget = scrolledtext.ScrolledText(frame, height=8, wrap=tk.WORD, bg="#f0f0f0", relief="sunken", borderwidth=1)
         log_widget.pack(fill='both', expand=True)
         setattr(self, log_attr_name, log_widget)
-        
+    def _copy_and_rewrite_paths(self, source_path: Path, dest_path: Path):
+        """
+        Copies a file and intelligently rewrites any internal file paths to be
+        relative to the new case directory. This is the definitive fix for the path issue.
+        """
+        if source_path.suffix.lower() not in ['.fst', '.dat', '.twr', '.bld', '.ipt', '.txt', '.in']:
+            shutil.copy2(source_path, dest_path)
+            return
+
+        try:
+            content = source_path.read_text(encoding='utf-8', errors='ignore')
+            original_content = content
+            
+            # --- DEFINITIVE FIX: Make the file extension optional in the regex by adding a '?' ---
+            # This allows it to match both full filenames and root names like "marin_semi".
+            pattern = re.compile(r'(["\'])((?:[a-zA-Z]:)?[a-zA-Z0-9_.\-\s\\/]+(\.\w{2,4})?)\1')
+
+            for match in pattern.finditer(content):
+                full_match = match.group(0)
+                path_inside = match.group(2)
+                
+                if "/" not in path_inside and "\\" not in path_inside:
+                    continue
+
+                new_basename = Path(path_inside).name
+                quote_char = match.group(1)
+                new_path_str = f"{quote_char}{new_basename}{quote_char}"
+                
+                content = content.replace(full_match, new_path_str)
+
+            dest_path.write_text(content, encoding='utf-8')
+
+            if content != original_content:
+                self.log(f"    Rewrote internal paths in {dest_path.name}")
+        except Exception as e:
+            self.log(f"    Warning: Could not read/rewrite {source_path.name}. Copying directly. Error: {e}")
+            shutil.copy2(source_path, dest_path)
     def resolve_file_path(self, base_dir, filename):
         if not filename or filename.lower() in ['unused', 'none', '']: return None
         filename = filename.strip('"').strip("'")
@@ -834,70 +927,112 @@ class OpenFASTTestCaseGUI:
             except: continue
         self.log(f"Warning: Could not find file: {filename}"); return None
         
-    def _find_referenced_files(self, file_path, base_dir):
-        found_files = {}
+    def _discover_and_parse_files_recursively(self, file_path: Path, file_info_by_path: Dict[Path, Dict], processed_paths: set):
+        """
+        Recursively scans files to find all dependencies, adding them to the
+        file_info_by_path dictionary and storing all original path strings.
+        """
+        if not file_path or not file_path.exists() or file_path in processed_paths:
+            return
+
+        self.log(f"  Scanning: {file_path.name}")
+        processed_paths.add(file_path)
+
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f: content = f.read()
-        except Exception as e: self.log(f"Could not read file {file_path}: {e}"); return {}
-        pattern = re.compile(r'^\s*["\']([^"\']+\.(?:dat|txt|csv|af|ipt|bld|twr|in))["\']\s+([a-zA-Z_][a-zA-Z0-9_\(\)]*)\s*', re.MULTILINE | re.IGNORECASE)
-        for match in pattern.finditer(content):
-            filename, keyword = match.group(1).strip(), match.group(2).strip()
-            if keyword.lower() in ['true', 'false', 'default', 'none', 'unused', 'echo']: continue
-            resolved_path = self.resolve_file_path(base_dir, filename)
-            if resolved_path: found_files[keyword] = resolved_path
-        num_af_match = re.search(r'^\s*(\d+)\s+NumAFfiles', content, re.MULTILINE | re.IGNORECASE)
-        if num_af_match:
-            num_af_files = int(num_af_match.group(1))
-            af_block_pattern = re.compile(r'^\s*["\']([^"\']+)["\']', re.MULTILINE)
-            start_pos = num_af_match.end()
-            af_matches = af_block_pattern.finditer(content, pos=start_pos)
-            for i, match in enumerate(af_matches):
-                if i >= num_af_files: break
-                filename = match.group(1).strip()
-                resolved_path = self.resolve_file_path(base_dir, filename)
-                if resolved_path: found_files[f'AirfoilFile_{i+1}'] = resolved_path
-        return found_files
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Get or create the entry for this unique file path
+            if file_path not in file_info_by_path:
+                file_info_by_path[file_path] = {
+                    'key': file_path.name, # Default key is the filename
+                    'original_strings': set(),
+                    'params': {}
+                }
+            
+            # 1. Extract parameters from this file
+            params = self.extract_parameters_from_file(content.splitlines())
+            if params:
+                file_info_by_path[file_path]['params'] = params
+
+            # 2. Find all referenced files within this file's content
+            pattern = re.compile(r'["\']([a-zA-Z0-9_.\-\\/]+(\.\w{2,4}))["\']')
+            for match in pattern.finditer(content):
+                original_path_string = match.group(1)
+                
+                if original_path_string.lower() in ['default', 'unused', 'none']:
+                    continue
+                
+                resolved_path = self.resolve_file_path(file_path.parent, original_path_string)
+                
+                if resolved_path and resolved_path.exists():
+                    # Add the original string to the set for the resolved file
+                    if resolved_path not in file_info_by_path:
+                         file_info_by_path[resolved_path] = {'key': resolved_path.name, 'original_strings': set(), 'params': {}}
+                    file_info_by_path[resolved_path]['original_strings'].add(original_path_string)
+                    
+                    # Recurse if we haven't processed this file yet
+                    if resolved_path not in processed_paths:
+                        self._discover_and_parse_files_recursively(resolved_path, file_info_by_path, processed_paths)
+
+        except Exception as e:
+            self.log(f"Could not process file {file_path.name}: {e}")
         
     def discover_parameters(self):
-        if not self.base_fst_path.get(): messagebox.showerror("Error", "Please select a base FST file first"); return
-        self.log("Starting parameter discovery..."); self.discovery_status.config(text="Scanning files..."); self.root.update()
-        self.discovered_parameters, self.file_structure = {}, {}
+        if not self.base_fst_path.get():
+            messagebox.showerror("Error", "Please select a base FST file first")
+            return
+        
+        self.log("Starting deep parameter discovery...")
+        self.discovery_status.config(text="Scanning all referenced files...")
+        self.root.update()
+
+        file_info_by_path = {}
+        processed_paths = set()
+        
         try:
             initial_fst_path = Path(self.base_fst_path.get())
-            files_to_scan, processed_paths = [('Main_FST', initial_fst_path)], set()
-            while files_to_scan:
-                file_key, file_path = files_to_scan.pop(0)
-                if not file_path or file_path in processed_paths or not file_path.exists(): continue
-                self.log(f"Processing {file_key}: {file_path.name}"); processed_paths.add(file_path)
-                self.file_structure[file_key] = {'path': file_path, 'params': {}}
-                newly_found_files = self._find_referenced_files(file_path, file_path.parent)
-                for new_key, new_path in newly_found_files.items():
-                    if new_path not in processed_paths:
-                        unique_key = new_key; i = 2
-                        while f"{new_key}_{i}" in self.file_structure: i += 1
-                        unique_key = f"{new_key}_{i}" if unique_key in self.file_structure else new_key
-                        files_to_scan.append((unique_key, new_path))
-            total_params = 0
-            for file_key, file_info in self.file_structure.items():
-                path = file_info.get('path')
-                if path and path.exists():
-                    params = self.extract_parameters_from_file(path)
-                    if params: self.discovered_parameters[file_key] = params; total_params += len(params)
+            self._discover_and_parse_files_recursively(initial_fst_path, file_info_by_path, processed_paths)
+            
+            self.file_structure = {}
+            self.discovered_parameters = {}
+            
+            final_keys = set()
+            for path, info in file_info_by_path.items():
+                key = info['key']
+                if key in final_keys:
+                    i = 1
+                    while f"{path.stem}_{i}{path.suffix}" in final_keys:
+                        i += 1
+                    key = f"{path.stem}_{i}{path.suffix}"
+                final_keys.add(key)
+                
+                self.file_structure[key] = {'path': path, 'original_strings': info['original_strings']}
+                if info['params']:
+                    self.discovered_parameters[key] = info['params']
+            
+            total_params = sum(len(p) for p in self.discovered_parameters.values())
             self.discovery_status.config(text=f"Discovered {total_params} parameters across {len(self.file_structure)} files.")
-            self.log(f"Parameter discovery complete: {total_params} parameters found.")
-        except Exception as e: self.log(f"Error during parameter discovery: {str(e)}"); messagebox.showerror("Error", f"Failed to discover parameters: {str(e)}")
+            self.log(f"Discovery complete: Found {len(self.file_structure)} total files.")
+
+        except Exception as e:
+            self.log(f"Error during parameter discovery: {str(e)}\n{traceback.format_exc()}")
+            messagebox.showerror("Error", f"Failed to discover parameters: {str(e)}")
         
-    def extract_parameters_from_file(self, file_path):
+    def extract_parameters_from_file(self, lines: List[str]):
         parameters = {}
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f: lines = f.readlines()
         param_pattern = re.compile(r'^\s*([^\s!#"]+)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[-!]')
         for i, line in enumerate(lines):
             line_stripped = line.strip()
             if not line_stripped or line_stripped.startswith(('!', '#', '-', '=')): continue
+            
+            if line_stripped.lower().startswith(('joint', 'member', 'node', 'station')): continue
+
             match = param_pattern.match(line_stripped)
             if match:
                 value_str, param_name = match.groups()
-                if param_name.lower() in ['true', 'false', 'default', 'unused', 'none', 'end', 'echo'] or any(ext in value_str for ext in ['.dat', '.txt', '.csv']): continue
+                if param_name.lower() in ['true', 'false', 'default', 'unused', 'none', 'end', 'echo'] or any(ext in value_str.lower() for ext in ['.dat', '.txt', '.csv', '.twr', '.bld', '.ipt', '.in']):
+                    continue
                 param_info = self.parse_parameter_value(value_str, line)
                 if param_info:
                     parameters[param_name] = {'line_number': i, 'original_value': param_info['value'], 'type': param_info['type'], 'description': line.split('!', 1)[-1].split('-', 1)[-1].strip(), 'unit': self.extract_unit(line)}
@@ -1022,48 +1157,148 @@ class OpenFASTTestCaseGUI:
     def remove_parameter(self, entry_to_remove):
         entry_to_remove['frame'].destroy(); self.parameter_entries.remove(entry_to_remove); self.update_total_cases()
         
+    # --- REPLACED METHOD: Implements the combined geometry + standard parameter grid ---
     def generate_test_cases(self):
-        if not self.base_fst_path.get() or not self.parameter_entries: messagebox.showerror("Error", "Please select a base FST file and add at least one parameter."); return
-        self.setup_log.delete(1.0, tk.END); self.log("Starting test case generation...")
+        # --- 1. Initial validation ---
+        is_geom_height = self.geom_vary_height_enabled.get()
+        is_geom_diam = self.geom_vary_diam_enabled.get()
+        is_geom_active = is_geom_height or is_geom_diam
+
+        if not self.base_fst_path.get():
+            messagebox.showerror("Error", "Please select a base FST file."); return
+        if not self.file_structure:
+            messagebox.showerror("Error", "Please run 'Discover Parameters' before generating cases. The file map is missing.")
+            return
+        if not is_geom_active and not self.parameter_entries:
+            messagebox.showerror("Error", "Please enable a geometric variation or add at least one standard parameter."); return
+        if is_geom_active and not GEOMETRY_ENGINE_AVAILABLE:
+            messagebox.showerror("Error", "Geometric variation is enabled, but the engine script ('advanced_geometry_engine.py') is missing."); return
+
+        self.setup_log.delete(1.0, tk.END)
+        self.log("Starting test case generation...")
+        
         try:
+            # --- 2. Setup paths and directories ---
             output_path = Path(self.output_dir.get())
             if output_path.exists() and any(output_path.iterdir()):
                 if not messagebox.askyesno("Warning", f"Output directory '{output_path}' is not empty. Overwrite?"): return
-            shutil.rmtree(output_path, ignore_errors=True); output_path.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(output_path, ignore_errors=True)
+            output_path.mkdir(parents=True, exist_ok=True)
             
-            num_cases = self.num_cases.get()
-            parameter_values = self.generate_parameter_values(num_cases)
-            if parameter_values.size == 0: self.log("No parameter values generated. Aborting."); return
+            # --- 3. Build the Combined Grid of All Variations ---
+            all_param_steps = []
             
-            num_cases = parameter_values.shape[1]; test_summary = []
-            for i in range(num_cases):
-                case_name = f"case_{i+1:04d}"; case_dir = output_path / case_name
-                case_dir.mkdir(exist_ok=True); self.log(f"Creating test case {i+1}/{num_cases}: {case_name}")
+            height_scales = np.linspace(self.geom_height_start_scale.get(), self.geom_height_end_scale.get(), self.geom_height_steps.get()) if is_geom_height else [1.0]
+            all_param_steps.append(height_scales)
+
+            diam_scales = np.linspace(self.geom_diam_start_scale.get(), self.geom_diam_end_scale.get(), self.geom_diam_steps.get()) if is_geom_diam else [1.0]
+            all_param_steps.append(diam_scales)
+
+            standard_param_combinations = [()]
+            if self.parameter_entries:
+                if self.distribution_var.get() == "grid_search":
+                    param_values_list = []
+                    for entry in self.parameter_entries:
+                        param_type = entry['param_info']['type']; values = []
+                        if param_type == 'float':
+                            start, end, steps = entry['start_var'].get(), entry['end_var'].get(), entry['steps_var'].get()
+                            values = np.linspace(start, end, steps) if steps > 1 else [start]
+                        elif param_type == 'int':
+                            if entry['int_mode_var'].get() == 'Range':
+                                start, end, steps = entry['start_var'].get(), entry['end_var'].get(), entry['steps_var'].get()
+                                values = np.round(np.linspace(start, end, steps)).astype(int) if steps > 1 else [int(round(start))]
+                            else: values = [int(i.strip()) for i in entry['list_var'].get().split(',') if i.strip()]
+                        elif param_type == 'bool': values = [True, False] if "Vary" in entry['bool_var'].get() else [entry['bool_var'].get() == "True"]
+                        elif param_type == 'option': values = [opt.strip().strip('"\'') for opt in entry['options_var'].get().split(',') if opt.strip()]
+                        param_values_list.append(values if values else [entry['param_info']['original_value']])
+                    if param_values_list:
+                        standard_param_combinations = list(itertools.product(*param_values_list))
+                else:
+                    messagebox.showerror("Logic Error", "Geometric variation is only compatible with 'Grid Search' distribution type.")
+                    return
+            all_param_steps.append(standard_param_combinations)
+
+            case_combinations = list(itertools.product(*all_param_steps))
+            num_cases = len(case_combinations)
+            self.log(f"Total combinations to generate: {num_cases}")
+            test_summary = []
+            
+            # --- 4. Prepare for Generation ---
+            model = None
+            if is_geom_active:
+                # Find the required file paths from the already successful discovery
+                ed_key = next((k for k, v in self.file_structure.items() if 'elastodyn' in v['path'].name.lower()), None)
+                hd_key = next((k for k, v in self.file_structure.items() if 'hydrodyn' in v['path'].name.lower()), None)
+                md_key = next((k for k, v in self.file_structure.items() if 'moordyn' in v['path'].name.lower()), None)
+
+                if not all([ed_key, hd_key, md_key]):
+                    raise FileNotFoundError("Could not find ElastoDyn, HydroDyn, or MoorDyn files in the discovered file structure. Please re-run discovery.")
+
+                ed_path = self.file_structure[ed_key]['path']
+                hd_path = self.file_structure[hd_key]['path']
+                md_path = self.file_structure[md_key]['path']
                 
-                for file_info in self.file_structure.values():
-                    if file_info['path'].exists(): shutil.copy2(file_info['path'], case_dir / file_info['path'].name)
+                # Pass the resolved paths directly to the engine
+                model = engine.PlatformModel(ed_path=ed_path, hd_path=hd_path, md_path=md_path)
+
+            if model:
+                for msg in model.log: self.log(f"  [Engine Discovery] {msg}")
+
+            # --- 5. Main Generation Loop ---
+            for i, combination in enumerate(case_combinations):
+                case_name = f"case_{i+1:04d}"
+                case_dir = output_path / case_name
+                self.log(f"Creating test case {i+1}/{num_cases}: {case_name}")
+                case_dir.mkdir(exist_ok=True)
                 
+                # 5.A. Copy ALL discovered files and rewrite their internal paths using the new robust method
+                self.log(f"  Copying and rewriting {len(self.file_structure)} model files...")
+                for file_key, file_info in self.file_structure.items():
+                    source_path = file_info['path']
+                    dest_path = case_dir / source_path.name
+                    # This single call replaces all the old complex logic
+                    self._copy_and_rewrite_paths(source_path, dest_path)
+
                 case_params = {}
-                for j, param_entry in enumerate(self.parameter_entries):
-                    file_type, param_name, param_info = param_entry['file_type'], param_entry['param_name'], param_entry['param_info']
-                    value = parameter_values[j][i]
-                    if isinstance(value, np.integer): value = int(value)
-                    elif isinstance(value, np.floating): value = float(value)
-                    case_params[f"{file_type}/{param_name}"] = value
-                    self.modify_parameter_in_file(case_dir, file_type, param_name, value, param_info)
-                
-                case_info = {'case_name': case_name, 'fst_file': Path(self.base_fst_path.get()).name, 'parameters': case_params, 'created': datetime.now().isoformat()}
-                test_summary.append(case_info)
-                with open(case_dir / 'case_info.json', 'w') as f: json.dump(case_info, f, indent=2)
-            
+                height_scale, diam_scale, standard_combo = combination
+
+                # 5.B. Apply GEOMETRIC variation (if active)
+                if is_geom_active:
+                    self.log(f"  Applying geometric variation: H_scale={height_scale:.3f}, D_scale={diam_scale:.3f}")
+                    case_params.update({'height_scale': float(height_scale), 'diameter_scale': float(diam_scale)})
+                    variation_data = model.generate_variation(height_scale=height_scale, diameter_scale=diam_scale)
+                    engine.update_files_for_case(case_dir, variation_data, model)
+
+                # 5.C. Apply STANDARD parameter variations
+                if self.parameter_entries and standard_combo:
+                    for j, value in enumerate(standard_combo):
+                        entry = self.parameter_entries[j]
+                        file_key = entry['file_type']
+                        param_name = entry['param_name']
+                        p_info = self.discovered_parameters[file_key][param_name]
+                        
+                        if isinstance(value, np.integer): value = int(value)
+                        elif isinstance(value, np.floating): value = float(value)
+                        
+                        case_params[f"{file_key}/{param_name}"] = value
+                        self.modify_parameter_in_file(case_dir, file_key, param_name, value, p_info)
+
+                # 5.D. Save case-specific metadata
+                case_info_data = {'case_name': case_name, 'fst_file': Path(self.base_fst_path.get()).name, 'parameters': case_params}
+                test_summary.append(case_info_data)
+                with open(case_dir / 'case_info.json', 'w') as f: json.dump(case_info_data, f, indent=2)
+
+            # --- 6. Finalize and Save Summary ---
             summary_file = output_path / "test_cases_summary.json"
-            with open(summary_file, 'w') as f: json.dump({'generation_date': datetime.now().isoformat(), 'base_fst_file': self.base_fst_path.get(), 'num_cases': num_cases, 'distribution': self.distribution_var.get(), 'test_cases': test_summary, 'file_structure': {k: str(v.get('path')) for k, v in self.file_structure.items()}}, f, indent=4)
+            with open(summary_file, 'w') as f: json.dump({'generation_date': datetime.now().isoformat(), 'base_fst_file': self.base_fst_path.get(), 'num_cases': num_cases, 'test_cases': test_summary}, f, indent=4)
             
             self.log(f"Successfully generated {num_cases} test cases in '{output_path}'")
             if messagebox.askyesno("Success", f"Generated {num_cases} test cases.\nSwitch to 'Run Simulations' tab?"):
                 self.notebook.select(self.run_tab); self.load_run_cases()
-        except Exception as e: self.log(f"Error: {str(e)}"); messagebox.showerror("Error", f"Failed to generate test cases: {str(e)}")
 
+        except Exception as e:
+            self.log(f"Error: {str(e)}\n{traceback.format_exc()}")
+            messagebox.showerror("Error", f"Failed to generate test cases: {str(e)}")
     def modify_parameter_in_file(self, case_dir, file_type, param_name, value, param_info):
         original_path = self.file_structure[file_type]['path']
         file_path = case_dir / original_path.name
@@ -1091,7 +1326,36 @@ class OpenFASTTestCaseGUI:
         if not parts: return line
         old_value_pos = line.find(parts[0])
         return line[:old_value_pos] + value_str + line[old_value_pos + len(parts[0]):]
-        
+    
+    def _rewrite_paths_in_file(self, target_file_path: Path, path_map: Dict[str, str]):
+        """
+        Reads a file and replaces all occurrences of old absolute/relative paths
+        with their new local basenames.
+        """
+        if target_file_path.suffix.lower() not in ['.fst', '.dat', '.twr', '.bld', '.ipt', '.txt', '.in']:
+            return # Skip binary or unknown files
+
+        try:
+            content = target_file_path.read_text(encoding='utf-8', errors='ignore')
+            original_content = content
+
+            # Create a regex that matches any of the original paths (escaped for regex)
+            # Sort by length descending to match longer paths first (e.g., "Airfoils/Cylinder.dat" before "Cylinder.dat")
+            sorted_paths = sorted(path_map.keys(), key=len, reverse=True)
+            
+            for old_path_str in sorted_paths:
+                new_basename = path_map[old_path_str]
+                # Replace if the path is found inside quotes
+                content = content.replace(f'"{old_path_str}"', f'"{new_basename}"')
+                content = content.replace(f"'{old_path_str}'", f"'{new_basename}'")
+
+            if content != original_content:
+                target_file_path.write_text(content, encoding='utf-8')
+                self.log(f"    Rewrote internal paths in {target_file_path.name}")
+
+        except Exception as e:
+            self.log(f"    Warning: Could not read/rewrite paths in {target_file_path.name}. Error: {e}")    
+
     def generate_parameter_values(self, num_cases):
         dist = self.distribution_var.get()
         if dist == "grid_search":
@@ -1173,8 +1437,24 @@ class OpenFASTTestCaseGUI:
 
     def update_total_cases(self, *args):
         dist_mode = self.distribution_var.get()
+        total = 1
+
+        # Factor in geometric variations if enabled
+        if self.geom_vary_height_enabled.get():
+            try:
+                total *= self.geom_height_steps.get()
+            except (tk.TclError, ValueError): pass
+
+        if self.geom_vary_diam_enabled.get():
+            try:
+                total *= self.geom_diam_steps.get()
+            except (tk.TclError, ValueError): pass
+
         if dist_mode == "grid_search":
-            total = 1 if self.parameter_entries else 0
+            is_geom_active = self.geom_vary_height_enabled.get() or self.geom_vary_diam_enabled.get()
+            if not self.parameter_entries and not is_geom_active:
+                total = 0
+            
             for entry in self.parameter_entries:
                 try:
                     if entry['param_info']['type'] == 'float': total *= entry['steps_var'].get()
@@ -1184,11 +1464,13 @@ class OpenFASTTestCaseGUI:
                 except (tk.TclError, ValueError): pass
             self.num_cases.set(total)
         elif dist_mode == "csv_columnwise":
-            total = 0
+            total_csv = 0
             if self.parameter_entries:
-                try: total = len([i for i in self.parameter_entries[0]['csv_var'].get().split(',') if i.strip()])
+                try: total_csv = len([i for i in self.parameter_entries[0]['csv_var'].get().split(',') if i.strip()])
                 except (tk.TclError, IndexError): pass
-            self.num_cases.set(total)
+            self.num_cases.set(total_csv * total) # Multiply by geometry steps
+        else: # Sampling
+            self.num_cases_spinbox.config(state='normal')
             
     def browse_fst_file(self):
         filename = filedialog.askopenfilename(title="Select base FST file", filetypes=[("FST files", "*.fst"), ("All files", "*.*")])
