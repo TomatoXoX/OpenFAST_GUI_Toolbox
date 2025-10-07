@@ -509,32 +509,117 @@ class DalembertRunner:
             for k, rk_local in sorted(fairleads.items()):
                 Fk = np.zeros(3)
                 method_used = force_methods[k]
-                validation_tension = None  # For comparison with FairTen{k}
                 
                 # Calculate global fairlead position (needed for all methods)
                 rk_global = platform_pos + R_plat @ rk_local
                 
                 # Method 1 & 2: MoorDyn Force Components
                 if method_used == 'moordyn_main':
-                    md_cols = [f'line{k}fx', f'line{k}fy', f'line{k}fz']
-                    Fk = row[md_cols].values
+                    # CRITICAL FIX: Try multiple column name variants
+                    md_cols_variants = [
+                        [f'line{k}fx', f'line{k}fy', f'line{k}fz'],      # lowercase
+                        [f'Line{k}Fx', f'Line{k}Fy', f'Line{k}Fz'],      # MixedCase
+                        [f'LINE{k}FX', f'LINE{k}FY', f'LINE{k}FZ'],      # UPPERCASE (most likely for your case!)
+                    ]
                     
-                    # Validation: Check if force components are sensible
-                    if np.all(Fk == 0):
-                        self.logger.warning(f"t={t:.2f}, Line {k}: MoorDyn force components are all zero! Check output configuration.")
+                    actual_cols = None
+                    matched_variant = None
+                    
+                    # Try each variant until we find a match
+                    for variant in md_cols_variants:
+                        # Case-insensitive column matching
+                        temp_cols = []
+                        all_found = True
+                        for target_col in variant:
+                            matched_col = next((c for c in df.columns if c.lower() == target_col.lower()), None)
+                            if matched_col:
+                                temp_cols.append(matched_col)
+                            else:
+                                all_found = False
+                                break
+                        
+                        if all_found:
+                            actual_cols = temp_cols
+                            matched_variant = variant
+                            break
+                    
+                    # DIAGNOSTIC: Log what we found (only at first timestep)
+                    if i == 0:
+                        if actual_cols:
+                            self.logger.info(f"Line {k} - Successfully matched columns: {actual_cols}")
+                        else:
+                            available_line_cols = [c for c in df.columns if f'line{k}' in c.lower()]
+                            self.logger.error(f"Line {k} - Could not find force columns! Available columns with 'line{k}': {available_line_cols}")
+                    
+                    if actual_cols:
+                        try:
+                            Fk = row[actual_cols].values.astype(float)
+                            
+                            # DIAGNOSTIC: Log raw values at first timestep
+                            if i == 0:
+                                self.logger.info(f"Line {k} - Raw force components: Fx={Fk[0]:.2e}, Fy={Fk[1]:.2e}, Fz={Fk[2]:.2e}")
+                                fk_mag = np.linalg.norm(Fk)
+                                self.logger.info(f"Line {k} - Force magnitude: {fk_mag:.2e} N")
+                            
+                            # Validation: Check if force components are sensible
+                            if np.all(Fk == 0):
+                                self.logger.warning(f"t={t:.2f}, Line {k}: MoorDyn force components are all zero! Check output configuration.")
+                            
+                        except Exception as e:
+                            self.logger.error(f"t={t:.2f}, Line {k}: Error reading force values: {e}")
+                            method_used = 'geometric'
+                    else:
+                        self.logger.error(f"t={t:.2f}, Line {k}: No matching force columns found. Falling back to geometric method.")
+                        method_used = 'geometric'
                     
                 elif method_used == 'moordyn_file':
-                    md_cols = [f'line{k}fx', f'line{k}fy', f'line{k}fz']
-                    idx = (df_md.index - t).abs().argmin()
-                    Fk = df_md.iloc[idx][md_cols].values
+                    md_cols_variants = [
+                        [f'line{k}fx', f'line{k}fy', f'line{k}fz'],
+                        [f'Line{k}Fx', f'Line{k}Fy', f'Line{k}Fz'],
+                        [f'LINE{k}FX', f'LINE{k}FY', f'LINE{k}FZ'],
+                    ]
                     
-                    if np.all(Fk == 0):
-                        self.logger.warning(f"t={t:.2f}, Line {k}: MoorDyn file force components are all zero! Check output configuration.")
+                    idx = (df_md.index - t).abs().argmin()
+                    actual_cols = None
+                    
+                    for variant in md_cols_variants:
+                        temp_cols = []
+                        all_found = True
+                        for target_col in variant:
+                            matched_col = next((c for c in df_md.columns if c.lower() == target_col.lower()), None)
+                            if matched_col:
+                                temp_cols.append(matched_col)
+                            else:
+                                all_found = False
+                                break
+                        
+                        if all_found:
+                            actual_cols = temp_cols
+                            break
+                    
+                    if actual_cols:
+                        try:
+                            Fk = df_md.iloc[idx][actual_cols].values.astype(float)
+                        except Exception as e:
+                            self.logger.error(f"t={t:.2f}, Line {k}: Error reading MoorDyn file: {e}")
+                            method_used = 'geometric'
+                    else:
+                        self.logger.error(f"t={t:.2f}, Line {k}: No matching columns in MoorDyn file. Falling back.")
+                        method_used = 'geometric'
                 
                 # Method 3: Geometric Approximation (Fallback)
-                else:  # method_used == 'geometric'
-                    tension_col = f'fairten{k}'
-                    if tension_col in row.index:
+                if method_used == 'geometric':
+                    # Try case-insensitive matching for tension column
+                    tension_col_variants = [f'fairten{k}', f'FairTen{k}', f'FAIRTEN{k}']
+                    tension_col = None
+                    
+                    for variant in tension_col_variants:
+                        matched = next((c for c in row.index if c.lower() == variant.lower()), None)
+                        if matched:
+                            tension_col = matched
+                            break
+                    
+                    if tension_col:
                         tension_mag = row[tension_col]
                         ak_global = anchors.get(k)
                         
@@ -543,29 +628,48 @@ class DalembertRunner:
                             norm = np.linalg.norm(direction_vec)
                             if norm > 1e-6:
                                 Fk = tension_mag * (direction_vec / norm)
+                                if i == 0:
+                                    self.logger.info(f"Line {k} - Using geometric approximation: tension={tension_mag:.2e} N")
                             else:
-                                self.logger.warning(f"t={t:.2f}, Line {k}: Fairlead and anchor positions coincident. Cannot calculate force direction.")
+                                self.logger.warning(f"t={t:.2f}, Line {k}: Fairlead and anchor positions coincident.")
                         else:
-                            self.logger.warning(f"t={t:.2f}, Line {k}: Anchor position not found. Cannot calculate force components.")
+                            self.logger.warning(f"t={t:.2f}, Line {k}: Anchor position not found.")
                     else:
-                        self.logger.warning(f"t={t:.2f}, Line {k}: Could not find tension magnitude column '{tension_col}'. Mooring force will be zero.")
+                        self.logger.warning(f"t={t:.2f}, Line {k}: Could not find tension column. Force will be zero.")
                 
-                # NEW: Validation against FairTen{k} if available
-                tension_col = f'fairten{k}'
-                if tension_col in row.index and not np.all(Fk == 0):
-                    reported_tension = row[tension_col]
+                # ENHANCED VALIDATION: Compare with FairTen{k}
+                tension_col_variants = [f'fairten{k}', f'FairTen{k}', f'FAIRTEN{k}']
+                actual_tension_col = None
+                
+                for variant in tension_col_variants:
+                    matched = next((c for c in row.index if c.lower() == variant.lower()), None)
+                    if matched:
+                        actual_tension_col = matched
+                        break
+                
+                if actual_tension_col and not np.all(Fk == 0):
+                    reported_tension = row[actual_tension_col]
                     computed_magnitude = np.linalg.norm(Fk)
                     
-                    # Allow for small differences due to catenary effects
-                    relative_error = abs(computed_magnitude - reported_tension) / max(reported_tension, 1e-6)
+                    absolute_error = abs(computed_magnitude - reported_tension)
+                    relative_error = absolute_error / max(reported_tension, 1e-6)
                     
-                    if relative_error > 0.10:  # Warn if >10% difference
+                    # Log at first timestep for all lines
+                    if i == 0:
+                        self.logger.info(
+                            f"Line {k} validation: Computed magnitude={computed_magnitude:.2e} N, "
+                            f"Reported tension={reported_tension:.2e} N, "
+                            f"Relative error={relative_error*100:.2f}%"
+                        )
+                    
+                    # Warn if >10% difference
+                    if relative_error > 0.10:
                         self.logger.warning(
                             f"t={t:.2f}, Line {k}: Force magnitude mismatch! "
-                            f"Computed={computed_magnitude:.2f} N, Reported={reported_tension:.2f} N, "
+                            f"Computed={computed_magnitude:.2e} N, Reported={reported_tension:.2e} N, "
                             f"Error={relative_error*100:.1f}%"
                         )
-                
+    
                 # Calculate moment contribution (using global position and force)
                 Moor_M += np.cross(rk_global, Fk)
                 Moor_F += Fk
