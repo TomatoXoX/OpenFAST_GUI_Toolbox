@@ -455,14 +455,50 @@ class DalembertRunner:
         
         # NEW: Pre-check which method will be used for each line
         force_methods = {}  # line_id -> 'moordyn_main' | 'moordyn_file' | 'geometric'
+
+        # DIAGNOSTIC: Log available mooring-related columns
+        mooring_cols = [c for c in df.columns if any(keyword in c.lower() for keyword in ['con', 'line', 'fair', 'moor'])]
+        if mooring_cols:
+            self.logger.debug(f"Available mooring-related columns: {mooring_cols}")
+
         for k in sorted(fairleads.keys()):
-            md_cols = [f'line{k}fx', f'line{k}fy', f'line{k}fz']
-            if all(c in df.columns for c in md_cols):
+            # Try connection point forces first (con{k+3} for fairleads, since points 4/5/6 are fairleads)
+            con_point = k + 3  # Point 4/5/6 for Line 1/2/3
+            con_cols = [f'con{con_point}fx', f'con{con_point}fy', f'con{con_point}fz']
+            
+            # Case-insensitive check - see if all three components exist
+            con_cols_found = []
+            for target in con_cols:
+                matched = next((c for c in df.columns if c.lower() == target.lower()), None)
+                if matched:
+                    con_cols_found.append(matched)
+            
+            if len(con_cols_found) == 3:
                 force_methods[k] = 'moordyn_main'
-            elif df_md is not None and all(c in df_md.columns for c in md_cols):
-                force_methods[k] = 'moordyn_file'
+                if k == 1:  # Log once for debugging
+                    self.logger.debug(f"Line {k}: Found connection point columns {con_cols_found}")
             else:
-                force_methods[k] = 'geometric'
+                # Try legacy line force components
+                line_cols = [f'line{k}fx', f'line{k}fy', f'line{k}fz']
+                line_cols_found = []
+                for target in line_cols:
+                    matched = next((c for c in df.columns if c.lower() == target.lower()), None)
+                    if matched:
+                        line_cols_found.append(matched)
+                
+                if len(line_cols_found) == 3:
+                    force_methods[k] = 'moordyn_main'
+                    if k == 1:
+                        self.logger.debug(f"Line {k}: Found line force columns {line_cols_found}")
+                # Try separate MoorDyn file
+                elif df_md is not None:
+                    md_con_found = all(any(c.lower() == f'con{con_point}f{comp}'.lower() for c in df_md.columns) for comp in ['x', 'y', 'z'])
+                    if md_con_found:
+                        force_methods[k] = 'moordyn_file'
+                    else:
+                        force_methods[k] = 'geometric'
+                else:
+                    force_methods[k] = 'geometric'
         
         # Log the detection summary
         self.logger.info("Mooring force calculation method detection:")
@@ -515,22 +551,26 @@ class DalembertRunner:
                 
                 # Method 1 & 2: MoorDyn Force Components
                 if method_used == 'moordyn_main':
-                    # CRITICAL FIX: Try multiple column name variants
+                    # Try multiple column name variants
+                    con_point = k + 3  # Fairlead line k corresponds to point k+3
                     md_cols_variants = [
-                        [f'line{k}fx', f'line{k}fy', f'line{k}fz'],      # lowercase
-                        [f'Line{k}Fx', f'Line{k}Fy', f'Line{k}Fz'],      # MixedCase
-                        [f'LINE{k}FX', f'LINE{k}FY', f'LINE{k}FZ'],      # UPPERCASE (most likely for your case!)
+                        # Connection point forces (most accurate for fairleads)
+                        [f'con{con_point}fx', f'con{con_point}fy', f'con{con_point}fz'],
+                        # Legacy line forces (less accurate - may be anchor-end)
+                        [f'line{k}fx', f'line{k}fy', f'line{k}fz'],
+                        # Fair prefix (some MoorDyn versions)
+                        [f'fair{k}fx', f'fair{k}fy', f'fair{k}fz'],
                     ]
                     
                     actual_cols = None
-                    matched_variant = None
+                    matched_variant_name = None
                     
-                    # Try each variant until we find a match
-                    for variant in md_cols_variants:
-                        # Case-insensitive column matching
+                    # Try each variant until we find a match (case-insensitive)
+                    for variant_idx, variant in enumerate(md_cols_variants):
                         temp_cols = []
                         all_found = True
                         for target_col in variant:
+                            # Case-insensitive search
                             matched_col = next((c for c in df.columns if c.lower() == target_col.lower()), None)
                             if matched_col:
                                 temp_cols.append(matched_col)
@@ -540,16 +580,16 @@ class DalembertRunner:
                         
                         if all_found:
                             actual_cols = temp_cols
-                            matched_variant = variant
+                            matched_variant_name = ['Con', 'Line', 'Fair'][variant_idx]
                             break
                     
                     # DIAGNOSTIC: Log what we found (only at first timestep)
                     if i == 0:
                         if actual_cols:
-                            self.logger.info(f"Line {k} - Successfully matched columns: {actual_cols}")
+                            self.logger.info(f"Line {k} - Successfully matched {matched_variant_name} columns: {actual_cols}")
                         else:
-                            available_line_cols = [c for c in df.columns if f'line{k}' in c.lower()]
-                            self.logger.error(f"Line {k} - Could not find force columns! Available columns with 'line{k}': {available_line_cols}")
+                            available_cols = [c for c in df.columns if any(kw in c.lower() for kw in ['con', 'line', 'fair'])]
+                            self.logger.error(f"Line {k} - Could not find force columns! Available: {available_cols[:10]}")
                     
                     if actual_cols:
                         try:
@@ -563,13 +603,13 @@ class DalembertRunner:
                             
                             # Validation: Check if force components are sensible
                             if np.all(Fk == 0):
-                                self.logger.warning(f"t={t:.2f}, Line {k}: MoorDyn force components are all zero! Check output configuration.")
+                                self.logger.warning(f"t={t:.2f}, Line {k}: MoorDyn force components are all zero!")
                             
                         except Exception as e:
                             self.logger.error(f"t={t:.2f}, Line {k}: Error reading force values: {e}")
                             method_used = 'geometric'
                     else:
-                        self.logger.error(f"t={t:.2f}, Line {k}: No matching force columns found. Falling back to geometric method.")
+                        self.logger.error(f"t={t:.2f}, Line {k}: No matching force columns found. Falling back.")
                         method_used = 'geometric'
                     
                 elif method_used == 'moordyn_file':
