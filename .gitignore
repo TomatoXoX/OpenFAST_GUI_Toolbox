@@ -108,3 +108,4 @@ test_cases/case_0003/NRELOffshrBsline5MW_OC4DeepCwindSemi_MoorDyn.dat
 test_cases/case_0003/NRELOffshrBsline5MW_OC4DeepCwindSemi_ServoDyn.dat
 test_cases/case_0003/SeaState.dat
 test_cases
+TurbSim_1000s/TurbSim_Vhub8.0ms_1000s.bts
