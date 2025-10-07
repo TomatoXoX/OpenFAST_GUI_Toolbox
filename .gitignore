@@ -7,6 +7,11 @@
 GUI_v0.2.txt
 openfast_geometry_engine.py
 openfast_toolbox
+input_output/__pycache__
+input_output/examples 
+input_output/test 
+input_output/tools 
+input_output/wetb 
 __pycache__/advanced_geometry_engine.cpython-312.pyc
 test_cases/test_cases_summary.json
 test_cases/case_0001/5MW_OC4Semi_WSt_WavesWN.fst
