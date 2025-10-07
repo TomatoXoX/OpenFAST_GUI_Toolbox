@@ -1348,6 +1348,19 @@ class DalembertRunner:
 class OpenFASTTestCaseGUI:
     def __init__(self, root):
         self.root = root; self.root.title("OpenFAST Test Case Workflow Manager"); self.root.geometry("1200x850")
+        try:
+            # Method 1: Using .ico file (recommended for Windows)
+            icon_path = Path(__file__).parent / "logo.ico"
+            if icon_path.exists():
+                self.root.iconbitmap(str(icon_path))
+            else:
+                # Method 2: Using .png file (works on all platforms)
+                icon_path = Path(__file__).parent / "logo.png"
+                if icon_path.exists():
+                    icon_img = tk.PhotoImage(file=str(icon_path))
+                    self.root.iconphoto(True, icon_img)
+        except Exception as e:
+            print(f"Could not load custom icon: {e}")
         style = ttk.Style(); style.theme_use('clam'); style.configure("Accent.TButton", foreground="white", background="#0078D7"); style.map("Accent.TButton", background=[('active', '#005A9E')])
         self.notebook = ttk.Notebook(root); self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
         self.setup_tab, self.run_tab, self.post_proc_tab = ttk.Frame(self.notebook), ttk.Frame(self.notebook), ttk.Frame(self.notebook)
@@ -1379,14 +1392,45 @@ class OpenFASTTestCaseGUI:
         self.create_tutorial_tab();self.create_setup_tab(); self.create_run_tab(); self.create_post_proc_tab(); self.process_queue()
         
     def create_setup_tab(self):
-        canvas = tk.Canvas(self.setup_tab); scrollbar = ttk.Scrollbar(self.setup_tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas); scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
-        self.create_file_selection_section(scrollable_frame); self.create_test_config_section(scrollable_frame)
+        # Create main frame with grid layout for better control
+        main_frame = ttk.Frame(self.setup_tab)
+        main_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Create canvas with scrollbar
+        canvas = tk.Canvas(main_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>", 
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=canvas.winfo_width())
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Bind canvas width changes to update window width
+        def on_canvas_configure(event):
+            canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width)
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Add all sections
+        self.create_file_selection_section(scrollable_frame)
+        self.create_test_config_section(scrollable_frame)
         self.create_geometry_section(scrollable_frame)
-        self.create_parameter_discovery_section(scrollable_frame); self.create_parameter_section(scrollable_frame)
-        self.create_action_section(scrollable_frame); self.create_log_section(scrollable_frame, "setup_log")
+        self.create_parameter_discovery_section(scrollable_frame)
+        self.create_parameter_section(scrollable_frame)
+        self.create_action_section(scrollable_frame)
+        
+        # Log section at the bottom with fixed height
+        log_frame = ttk.LabelFrame(self.setup_tab, text="Output Log", padding="10")
+        log_frame.pack(fill='x', side='bottom', pady=5, padx=5)
+        self.setup_log = scrolledtext.ScrolledText(log_frame, height=6, wrap=tk.WORD, bg="#f0f0f0", relief="sunken", borderwidth=1)
+        self.setup_log.pack(fill='both', expand=False)
         
     def create_run_tab(self):
         main_frame = ttk.Frame(self.run_tab, padding="10"); main_frame.pack(fill='both', expand=True)
@@ -1633,14 +1677,43 @@ class OpenFASTTestCaseGUI:
         self.discovery_status = ttk.Label(frame, text="Select a .fst file and click 'Discover Parameters'"); self.discovery_status.pack(side='left', padx=20)
         
     def create_parameter_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="Parameter Configuration", padding="10"); frame.pack(fill='both', expand=True, pady=5, padx=5)
-        control_frame = ttk.Frame(frame); control_frame.pack(fill='x', pady=5)
+        frame = ttk.LabelFrame(parent, text="Parameter Configuration", padding="10")
+        frame.pack(fill='x', pady=5, padx=5)
+        
+        control_frame = ttk.Frame(frame)
+        control_frame.pack(fill='x', pady=5)
         ttk.Button(control_frame, text="Add from Discovery", command=self.show_parameter_selector).pack(side='left', padx=5)
         ttk.Button(control_frame, text="Clear All", command=self.clear_parameters).pack(side='left', padx=5)
-        canvas = tk.Canvas(frame, height=250); scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
-        self.param_list_frame = ttk.Frame(canvas); self.param_list_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self.param_list_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        
+        # Create container frame for canvas and scrollbar
+        scroll_container = ttk.Frame(frame, height=200)  # Fixed height container
+        scroll_container.pack(fill='x', pady=5)
+        scroll_container.pack_propagate(False)  # Prevent container from shrinking
+        
+        # Create scrollable area
+        canvas = tk.Canvas(scroll_container, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        self.param_list_frame = ttk.Frame(canvas)
+        
+        # Configure scrolling
+        self.param_list_frame.bind(
+            "<Configure>", 
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        # Create window in canvas
+        canvas.create_window((0, 0), window=self.param_list_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Enable mousewheel scrolling
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
         
     def create_action_section(self, parent):
         frame = ttk.Frame(parent, padding="5"); frame.pack(fill='x', pady=10)
@@ -2895,9 +2968,13 @@ class OpenFASTTestCaseGUI:
             # --- Define text and formatting tags ---
             text_widget.tag_configure('h1', font=('TkDefaultFont', 16, 'bold'), spacing3=10, foreground='#003366')
             text_widget.tag_configure('h2', font=('TkDefaultFont', 12, 'bold'), spacing1=15, spacing3=5, foreground='#005A9E')
+            text_widget.tag_configure('h3', font=('TkDefaultFont', 10, 'bold'), spacing1=10, spacing3=3, foreground='#007ACC')
             text_widget.tag_configure('bold', font=('TkDefaultFont', 9, 'bold'))
             text_widget.tag_configure('code', font=('Consolas', 9), background='#f0f0f0', relief='raised', borderwidth=1, lmargin1=20, lmargin2=20, rmargin=20)
+            text_widget.tag_configure('code_block', font=('Consolas', 8), background='#f8f8f8', relief='sunken', borderwidth=1, lmargin1=30, lmargin2=30, rmargin=30, spacing1=5, spacing3=5)
             text_widget.tag_configure('list_item', lmargin1=20, lmargin2=20)
+            text_widget.tag_configure('warning', foreground='#D14', font=('TkDefaultFont', 9, 'bold'))
+            text_widget.tag_configure('success', foreground='#0A0', font=('TkDefaultFont', 9, 'bold'))
 
             # --- Tutorial Content ---
             tutorial_text = [
@@ -2937,9 +3014,11 @@ class OpenFASTTestCaseGUI:
                 (". This creates a subdirectory for each case, copies all necessary files, modifies the parameters, and saves a summary file (", ''),
                 ("test_cases_summary.json", 'code'),
                 (").\n\n", ''),
-                ("IMPORTANT NOTES: 5MW BASELINE FOLDER MUST BE COPY IN THE TEST CASE GENERATION IF USING EXAMPLE TEST CASE", 'h2'),
+                
+                ("⚠ IMPORTANT SETUP REQUIREMENT\n", 'warning'),
+                ("If using the 5MW OC4 example, the 5MW_Baseline folder must be copied into each test case directory.\n\n", 'warning'),
 
-                ("\nTab 2: Run Simulations\n", 'h2'),
+                ("Tab 2: Run Simulations\n", 'h2'),
                 ("The goal of this tab is to execute the OpenFAST simulations for the generated cases.\n\n", ''),
                 ("1. Configuration:", 'bold'),
                 (" Browse for your ", ''),
@@ -2988,11 +3067,118 @@ class OpenFASTTestCaseGUI:
                 ("Right-click on any case", 'bold'),
                 (" in the list and select ", ''),
                 ("Open Folder", 'code'),
-                (" to view the generated CSV files, reports, and plots.\n", ''),
+                (" to view the generated CSV files, reports, and plots.\n\n", ''),
+
+                ("Configuring OpenFAST Output Channels for d'Alembert Analysis\n", 'h2'),
+                ("For accurate load analysis, you must configure specific output channels in your OpenFAST input files.\n\n", ''),
+
+                ("Required Output Channels by Module\n", 'h3'),
+                
+                ("1. Main FST File (.fst)\n", 'bold'),
+                ("Ensure the following modules are enabled:\n", ''),
+                ("CompElast = 1    (ElastoDyn - required)\n", 'code_block'),
+                ("CompAero = 2     (AeroDyn - if analyzing aerodynamic loads)\n", 'code_block'),
+                ("CompHydro = 1    (HydroDyn - required for offshore)\n", 'code_block'),
+                ("CompMooring = 3  (MoorDyn - required for moored platforms)\n\n", 'code_block'),
+
+                ("2. ElastoDyn Output Channels\n", 'bold'),
+                ("Add these channels to the ", ''),
+                ("OutList", 'code'),
+                (" section of your ElastoDyn input file:\n", ''),
+                ("\"TwrBsFxt\"  - Tower base fore-aft force (X)\n", 'code_block'),
+                ("\"TwrBsFyt\"  - Tower base side-side force (Y)\n", 'code_block'),
+                ("\"TwrBsFzt\"  - Tower base vertical force (Z)\n", 'code_block'),
+                ("\"TwrBsMxt\"  - Tower base roll moment\n", 'code_block'),
+                ("\"TwrBsMyt\"  - Tower base pitch moment\n", 'code_block'),
+                ("\"TwrBsMzt\"  - Tower base yaw moment\n", 'code_block'),
+                ("\"PtfmRoll\"  - Platform roll angle\n", 'code_block'),
+                ("\"PtfmPitch\" - Platform pitch angle\n", 'code_block'),
+                ("\"PtfmYaw\"   - Platform yaw angle\n", 'code_block'),
+                ("\"PtfmSurge\" - Platform surge displacement\n", 'code_block'),
+                ("\"PtfmSway\"  - Platform sway displacement\n", 'code_block'),
+                ("\"PtfmHeave\" - Platform heave displacement\n\n", 'code_block'),
+
+                ("3. HydroDyn Output Channels\n", 'bold'),
+                ("Add these channels to the ", ''),
+                ("OutList", 'code'),
+                (" section of your HydroDyn input file:\n", ''),
+                ("\"HydroFxi\"  - Total hydrodynamic force (X)\n", 'code_block'),
+                ("\"HydroFyi\"  - Total hydrodynamic force (Y)\n", 'code_block'),
+                ("\"HydroFzi\"  - Total hydrodynamic force (Z)\n", 'code_block'),
+                ("\"HydroMxi\"  - Total hydrodynamic moment (roll)\n", 'code_block'),
+                ("\"HydroMyi\"  - Total hydrodynamic moment (pitch)\n", 'code_block'),
+                ("\"HydroMzi\"  - Total hydrodynamic moment (yaw)\n\n", 'code_block'),
+
+                ("4. MoorDyn Output Channels (CRITICAL for Accurate Results)\n", 'bold'),
+                ("For HIGH-FIDELITY mooring force analysis, you MUST add connection point forces to the ", ''),
+                ("OUTPUTS", 'code'),
+                (" section of your MoorDyn input file.\n\n", ''),
+                
+                ("✓ RECOMMENDED Configuration (0% error):\n", 'success'),
+                ("Add the following to the OUTPUTS section in your MoorDyn file:\n", ''),
+                ("------------------------ OUTPUTS --------------------------------------------\n", 'code_block'),
+                ("FairTen1    ! Fairlead 1 tension magnitude (for validation)\n", 'code_block'),
+                ("FairTen2    ! Fairlead 2 tension magnitude\n", 'code_block'),
+                ("FairTen3    ! Fairlead 3 tension magnitude\n", 'code_block'),
+                ("Con4Fx      ! Fairlead 1 force X-component (HIGH FIDELITY)\n", 'code_block'),
+                ("Con4Fy      ! Fairlead 1 force Y-component\n", 'code_block'),
+                ("Con4Fz      ! Fairlead 1 force Z-component\n", 'code_block'),
+                ("Con5Fx      ! Fairlead 2 force X-component (HIGH FIDELITY)\n", 'code_block'),
+                ("Con5Fy      ! Fairlead 2 force Y-component\n", 'code_block'),
+                ("Con5Fz      ! Fairlead 2 force Z-component\n", 'code_block'),
+                ("Con6Fx      ! Fairlead 3 force X-component (HIGH FIDELITY)\n", 'code_block'),
+                ("Con6Fy      ! Fairlead 3 force Y-component\n", 'code_block'),
+                ("Con6Fz      ! Fairlead 3 force Z-component\n", 'code_block'),
+                ("END\n", 'code_block'),
+                ("-----------------------------------------------------------------------------\n\n", 'code_block'),
+
+                ("Understanding MoorDyn Point Numbering:\n", 'bold'),
+                ("For a typical OC4 3-line configuration:\n", ''),
+                ("  • Points 1-3: Anchors (FIXED to seabed)\n", 'list_item'),
+                ("  • Points 4-6: Fairleads (VESSEL attachment to platform)\n", 'list_item'),
+                ("  • Line 1 connects Point 1 (anchor) to Point 4 (fairlead)\n", 'list_item'),
+                ("  • Line 2 connects Point 2 (anchor) to Point 5 (fairlead)\n", 'list_item'),
+                ("  • Line 3 connects Point 3 (anchor) to Point 6 (fairlead)\n\n", 'list_item'),
+
+                ("Therefore, use ", ''),
+                ("Con4/5/6", 'code'),
+                (" for the three fairlead forces.\n\n", ''),
+
+                ("⚠ DEPRECATED Configuration (avoid if possible):\n", 'warning'),
+                ("DO NOT use Line{k}Fx/Fy/Fz outputs - these may report anchor-end forces instead of fairlead forces, causing errors up to 3000%!\n\n", 'warning'),
+
+                ("Fallback Mode:\n", 'bold'),
+                ("If MoorDyn force components are not available, the analysis will automatically fall back to geometric approximation using fairlead tension and straight-line geometry. This method has ~5-10% reduced accuracy but will still produce reasonable results.\n\n", ''),
+
+                ("5. Verification Checklist\n", 'bold'),
+                ("Before running simulations, verify:\n", ''),
+                ("  ✓ All required ElastoDyn outputs are enabled (TwrBsF*, TwrBsM*, Ptfm*)\n", 'list_item'),
+                ("  ✓ All required HydroDyn outputs are enabled (HydroF*, HydroM*)\n", 'list_item'),
+                ("  ✓ MoorDyn connection point forces are configured (Con{4,5,6}Fx/Fy/Fz)\n", 'list_item'),
+                ("  ✓ FairTen{1,2,3} outputs are included for validation\n", 'list_item'),
+                ("  ✓ Simulation duration (TMax) is sufficient for steady-state analysis\n", 'list_item'),
+                ("  ✓ Time step (DT) is small enough to capture dynamics\n\n", 'list_item'),
+
+                ("Expected Analysis Results:\n", 'h3'),
+                ("When properly configured, the d'Alembert analysis will:\n", ''),
+                ("  • Generate a comprehensive staticized_report.txt with:\n", 'list_item'),
+                ("    - System geometry and mass properties\n", 'list_item'),
+                ("    - Mooring force statistics (mean, min, max, std dev)\n", 'list_item'),
+                ("    - Load extrema (force and moment peaks)\n", 'list_item'),
+                ("    - Validation of force calculation methods\n", 'list_item'),
+                ("  • Create loads_extrema_after{T}s.csv with critical load cases\n", 'list_item'),
+                ("  • Show 0.00% validation error for high-fidelity mooring forces\n", 'list_item'),
+                ("  • Display realistic force magnitudes (7-12 MN for OC4 semi)\n\n", 'list_item'),
 
                 ("Final Notes\n", 'h2'),
-                ("Thank you for using the OpenFAST Workflow Manager! We hope this tool enhances your simulation workflow and analysis efficiency.\n", ''),
-                ("For further assistance or to report issues, please visit our GitHub repository or contact the development team. \nAuthor: Trang Vinh Nghi\nDevelopment Supported By the Department of Aerospace Engineering - Ho Chi Minh City University of Technology - Viet Nam National University \nEmail: trangvinhnghi2212@gmail.com\nGitHub Repo Link: https://github.com/TomatoXoX/OpenFAST_GUI_Toolbox", '')
+                ("Thank you for using the OpenFAST Workflow Manager! We hope this tool enhances your simulation workflow and analysis efficiency.\n\n", ''),
+                ("For further assistance or to report issues, please visit our GitHub repository or contact the development team.\n\n", ''),
+                ("Author: Trang Vinh Nghi\n", 'bold'),
+                ("Development Supported By: Department of Aerospace Engineering\n", ''),
+                ("                         Ho Chi Minh City University of Technology\n", ''),
+                ("                         Vietnam National University\n\n", ''),
+                ("Email: trangvinhnghi2212@gmail.com\n", ''),
+                ("GitHub: https://github.com/TomatoXoX/OpenFAST_GUI_Toolbox\n", ''),
             ]
 
             # Insert the text with the defined tags
