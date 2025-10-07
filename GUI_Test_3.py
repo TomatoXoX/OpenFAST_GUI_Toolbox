@@ -716,12 +716,9 @@ class DalembertRunner:
                 fair_entries.append((k, rk_local, Fk, method_used))
 
             # Log mooring force summary periodically
-            if i % getattr(args, 'log_step', 100) == 0:
-                total_moor_mag = np.linalg.norm(Moor_F)
-                self.logger.debug(f"t={t:.2f}, Total mooring force magnitude: {total_moor_mag:.2f} N")
-                for k, _, Fk, method in fair_entries:
-                    fk_mag = np.linalg.norm(Fk)
-                    self.logger.debug(f"  Line {k}: |F|={fk_mag:.2f} N, method={method}")
+            if i % (getattr(args, 'log_step', 100) * 10) == 0:
+                progress_pct = (i / n) * 100
+                self.logger.debug(f"Processing: {progress_pct:.1f}% complete (t={t:.2f}s)")
 
             F_ext = H_F + Moor_F + ED_F
             M_ext_at_PRP = H_M + Moor_M + ED_M_at_PRP
@@ -742,7 +739,18 @@ class DalembertRunner:
                     'geometric': 'MoorDyn_Approx'
                 }[method]
                 add(f'{method_label}_Fairlead{k}', Fk, rk, None)
-            
+            if i % 100 == 0:
+                for k, _, Fk, method in fair_entries:
+                    if not hasattr(self, 'moor_force_samples'):
+                        self.moor_force_samples = {k: [] for k in sorted(fairleads.keys())}
+                    self.moor_force_samples[k].append({
+                        'time': t,
+                        'Fx': Fk[0],
+                        'Fy': Fk[1],
+                        'Fz': Fk[2],
+                        'magnitude': np.linalg.norm(Fk),
+                        'method': method
+                    })
             add('Inertia_Trans_CoM', F_inert, r_com, None)
             add('Inertia_Rot_CoM', np.zeros(3), r_com, M_inert)
             
@@ -760,32 +768,272 @@ class DalembertRunner:
             
 
     def _write_reports(self, loads_df, args, geo, fairleads, m, r_com, I, analysis_start_time, force_methods):
-        extrema_lines=[]
+        """
+        Generate comprehensive staticized load reports with geometry, simulation parameters,
+        and mooring force statistics.
+        """
+        # --- 1. Extrema Analysis ---
+        extrema_lines = []
         total = loads_df[(loads_df['LoadName']=='TOTAL_with_Inertia_at_PRP') & (loads_df['Time'] >= analysis_start_time)].copy()
+        
         if total.empty:
             extrema_lines.append(f"No TOTAL_with_Inertia_at_PRP samples at or after {analysis_start_time:.2f}s; extrema unavailable.")
         else:
             Fmag = np.sqrt(total['Fx']**2 + total['Fy']**2 + total['Fz']**2)
             Mmag = np.sqrt(total['Mx']**2 + total['My']**2 + total['Mz']**2)
             
-            def pick_extrema(series): return series.idxmin(), series.idxmax(), (series - series.mean()).abs().idxmin()
+            def pick_extrema(series): 
+                return series.idxmin(), series.idxmax(), (series - series.mean()).abs().idxmin()
+            
             F_min_i, F_max_i, F_avg_i = pick_extrema(Fmag)
             M_min_i, M_max_i, M_avg_i = pick_extrema(Mmag)
             
-            cases = {'F_min': F_min_i, 'F_max': F_max_i, 'F_avg': F_avg_i, 'M_min': M_min_i, 'M_max': M_max_i, 'M_avg': M_avg_i}
-            extrema_data = [{'Case': name, **total.loc[idx][['Time','Fx','Fy','Fz','Mx','My','Mz']]} for name, idx in cases.items()]
+            cases = {
+                'F_min': F_min_i, 'F_max': F_max_i, 'F_avg': F_avg_i, 
+                'M_min': M_min_i, 'M_max': M_max_i, 'M_avg': M_avg_i
+            }
+            extrema_data = [
+                {'Case': name, **total.loc[idx][['Time','Fx','Fy','Fz','Mx','My','Mz']]} 
+                for name, idx in cases.items()
+            ]
             extrema_df = pd.DataFrame(extrema_data)
             extrema_csv = os.path.join(args.outdir, f'loads_extrema_after{int(analysis_start_time)}s.csv')
             extrema_df.to_csv(extrema_csv, index=False)
             self.logger.info(f"Wrote extrema CSV: {Path(extrema_csv).name}")
             extrema_lines = extrema_df.to_string(index=False).split('\n')
 
-        rep = [f"Staticized snapshot report (d'Alembert) for {self.case_name}", "="*80, ""]
-        rep.append(f"Mass properties: m={m:.6e} kg, CoM=({r_com[0]:.3f}, {r_com[1]:.3f}, {r_com[2]:.3f}) m")
-        rep.append("Inertia tensor (CoM, inertial axes):\n" + np.array2string(I, prefix='    '))
+        # --- 2. Mooring Force Statistics (if samples collected) ---
+        mooring_stats_lines = []
+        mooring_stats_lines.append("\nMooring Force Statistics:")
+        mooring_stats_lines.append("=" * 80)
         
-        # NEW: Add mooring force method summary
-        rep.append("\nMooring Force Calculation Methods:")
+        if hasattr(self, 'moor_force_samples') and self.moor_force_samples:
+            for k in sorted(fairleads.keys()):
+                samples = self.moor_force_samples.get(k, [])
+                if not samples:
+                    continue
+                
+                # Extract magnitudes and components
+                magnitudes = [s['magnitude'] for s in samples]
+                fx_vals = [s['Fx'] for s in samples]
+                fy_vals = [s['Fy'] for s in samples]
+                fz_vals = [s['Fz'] for s in samples]
+                method = samples[0]['method']
+                
+                # Calculate statistics
+                mag_mean = np.mean(magnitudes)
+                mag_std = np.std(magnitudes)
+                mag_min = np.min(magnitudes)
+                mag_max = np.max(magnitudes)
+                
+                fx_mean = np.mean(fx_vals)
+                fy_mean = np.mean(fy_vals)
+                fz_mean = np.mean(fz_vals)
+                
+                method_label = {
+                    'moordyn_main': 'HIGH FIDELITY (MoorDyn Components)',
+                    'moordyn_file': 'HIGH FIDELITY (MoorDyn File)',
+                    'geometric': 'REDUCED ACCURACY (Geometric Approximation)'
+                }[method]
+                
+                mooring_stats_lines.append(f"\nLine {k} - {method_label}:")
+                mooring_stats_lines.append("-" * 80)
+                mooring_stats_lines.append(f"  Force Magnitude:")
+                mooring_stats_lines.append(f"    Mean:   {mag_mean:.2e} N  (Std Dev: {mag_std:.2e} N)")
+                mooring_stats_lines.append(f"    Min:    {mag_min:.2e} N")
+                mooring_stats_lines.append(f"    Max:    {mag_max:.2e} N")
+                mooring_stats_lines.append(f"    Range:  {mag_max - mag_min:.2e} N")
+                mooring_stats_lines.append(f"  Mean Force Components:")
+                mooring_stats_lines.append(f"    Fx: {fx_mean:>12.2e} N  (surge direction)")
+                mooring_stats_lines.append(f"    Fy: {fy_mean:>12.2e} N  (sway direction)")
+                mooring_stats_lines.append(f"    Fz: {fz_mean:>12.2e} N  (heave direction)")
+                
+                # Find time of min/max
+                t_min = samples[magnitudes.index(mag_min)]['time']
+                t_max = samples[magnitudes.index(mag_max)]['time']
+                mooring_stats_lines.append(f"  Extrema Occurrence:")
+                mooring_stats_lines.append(f"    Minimum occurred at t={t_min:.2f}s")
+                mooring_stats_lines.append(f"    Maximum occurred at t={t_max:.2f}s")
+            
+            # Total mooring force summary
+            mooring_stats_lines.append("\n" + "=" * 80)
+            mooring_stats_lines.append("Combined Mooring System:")
+            mooring_stats_lines.append("-" * 80)
+            
+            # Calculate total force at each sampled timestep
+            sample_times = sorted(set(s['time'] for samples in self.moor_force_samples.values() for s in samples))
+            total_forces = []
+            for t in sample_times:
+                total_F = np.zeros(3)
+                for k in sorted(fairleads.keys()):
+                    sample = next((s for s in self.moor_force_samples[k] if abs(s['time'] - t) < 1e-6), None)
+                    if sample:
+                        total_F += np.array([sample['Fx'], sample['Fy'], sample['Fz']])
+                total_forces.append(np.linalg.norm(total_F))
+            
+            if total_forces:
+                total_mean = np.mean(total_forces)
+                total_std = np.std(total_forces)
+                total_min = np.min(total_forces)
+                total_max = np.max(total_forces)
+                
+                mooring_stats_lines.append(f"  Combined Magnitude:")
+                mooring_stats_lines.append(f"    Mean:   {total_mean:.2e} N  (Std Dev: {total_std:.2e} N)")
+                mooring_stats_lines.append(f"    Min:    {total_min:.2e} N")
+                mooring_stats_lines.append(f"    Max:    {total_max:.2e} N")
+                mooring_stats_lines.append(f"    Range:  {total_max - total_min:.2e} N")
+        else:
+            mooring_stats_lines.append("  No mooring force samples collected during simulation.")
+        # --- 3. Build the Report ---
+        rep = []
+        rep.append("=" * 80)
+        rep.append(f"d'ALEMBERT STATICIZATION REPORT: {self.case_name}")
+        rep.append("=" * 80)
+        rep.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        rep.append(f"Analysis Method: d'Alembert Staticization (Quasi-Static Load Extraction)")
+        rep.append("")
+        
+        # --- 3A. Simulation Parameters ---
+        rep.append("SIMULATION PARAMETERS:")
+        rep.append("-" * 80)
+        
+        try:
+            fst_path = Path(args.fst)
+            if fst_path.exists():
+                fst_content = fst_path.read_text(encoding='utf-8', errors='ignore')
+                
+                params_to_extract = {
+                    'TMax': ('Simulation Duration', 's'),
+                    'DT': ('Time Step', 's'),
+                    'CompAero': ('Aerodynamics', ''),
+                    'CompHydro': ('Hydrodynamics', ''),
+                    'CompMooring': ('Mooring', ''),
+                    'CompElast': ('Elasticity', ''),
+                }
+                
+                rep.append(f"  FST File: {fst_path.name}")
+                
+                for param, (desc, unit) in params_to_extract.items():
+                    match = re.search(rf'^\s*([^\s]+)\s+{param}\b', fst_content, re.MULTILINE | re.IGNORECASE)
+                    if match:
+                        value = match.group(1).strip('"').strip("'")
+                        unit_str = f" {unit}" if unit else ""
+                        rep.append(f"  {desc:<25}: {value}{unit_str}")
+                
+                rep.append(f"  Analysis Start Time      : {analysis_start_time:.2f} s")
+                rep.append(f"  Analysis Duration        : {total['Time'].max() - analysis_start_time:.2f} s" if not total.empty else "  Analysis Duration        : N/A")
+                rep.append("")
+        except Exception as e:
+            self.logger.warning(f"Could not extract simulation parameters: {e}")
+            rep.append(f"  Analysis Start Time: {analysis_start_time:.2f} s")
+            rep.append("")
+        
+        # --- 3B. System Geometry ---
+        rep.append("SYSTEM GEOMETRY:")
+        rep.append("-" * 80)
+        rep.append(f"  Tower:")
+        rep.append(f"    Height (TowerHt)         : {geo.get('TowerHt', 0):.3f} m")
+        rep.append(f"    Base Height (TowerBsHt)  : {geo.get('TowerBsHt', 0):.3f} m")
+        rep.append(f"    Tower Length             : {geo.get('TowerHt', 0) - geo.get('TowerBsHt', 0):.3f} m")
+        rep.append(f"  Nacelle:")
+        rep.append(f"    Overhang                 : {geo.get('OverHang', 0):.3f} m")
+        rep.append(f"    Shaft Tilt               : {geo.get('ShftTilt', 0):.3f} deg")
+        rep.append(f"    Tower-to-Shaft Height    : {geo.get('Twr2Shft', 0):.3f} m")
+        rep.append(f"  Rotor:")
+        rep.append(f"    Tip Radius               : {geo.get('TipRad', 0):.3f} m")
+        rep.append(f"    Hub Radius               : {geo.get('HubRad', 0):.3f} m")
+        rep.append(f"    Rotor Diameter           : {2 * geo.get('TipRad', 0):.3f} m")
+        rep.append(f"  Reference Points:")
+        rep.append(f"    Yaw Bearing (Z)          : {geo['YawBearing'][2]:.3f} m")
+        rep.append(f"    Tower Base (Z)           : {geo['TowerBase'][2]:.3f} m")
+        rep.append(f"    Platform Ref Point (PRP) : [0.000, 0.000, 0.000] m")
+        rep.append("")
+        
+        # --- 3C. Mass Properties ---
+        rep.append("MASS PROPERTIES:")
+        rep.append("-" * 80)
+        rep.append(f"  Total Mass: {m:.6e} kg ({m/1000:.2f} metric tons)")
+        rep.append(f"  Center of Mass (CoM) [inertial frame]:")
+        rep.append(f"    X (surge) : {r_com[0]:>10.3f} m")
+        rep.append(f"    Y (sway)  : {r_com[1]:>10.3f} m")
+        rep.append(f"    Z (heave) : {r_com[2]:>10.3f} m")
+        rep.append(f"  CoM Height above PRP: {r_com[2]:.3f} m")
+        rep.append("")
+        rep.append("  Inertia Tensor (about CoM, inertial axes) [kg·m²]:")
+        for i, row_label in enumerate(['    Ixx, Ixy, Ixz:', '    Iyx, Iyy, Iyz:', '    Izx, Izy, Izz:']):
+            rep.append(f"{row_label}  {I[i,0]:>12.2e}  {I[i,1]:>12.2e}  {I[i,2]:>12.2e}")
+        rep.append("")
+        
+        # --- 3D. Mooring System Configuration ---
+        rep.append("MOORING SYSTEM CONFIGURATION:")
+        rep.append("-" * 80)
+        rep.append(f"  Number of Lines: {len(fairleads)}")
+        rep.append("")
+        
+        # Try to extract anchor positions from MoorDyn file
+        anchors_info = {}
+        try:
+            # Find MoorDyn file from FST references
+            refs = _find_fst_refs(args.fst, self.logger)
+            md_path = refs.get('MooringFile')
+            
+            if md_path and Path(md_path).exists():
+                md_lines = _read_lines(md_path, self.logger)
+                
+                # Parse POINTS section for anchor locations
+                in_points = False
+                for line in md_lines:
+                    line_upper = line.strip().upper()
+                    
+                    if '---' in line_upper and 'POINTS' in line_upper:
+                        in_points = True
+                        continue
+                    elif '---' in line_upper and in_points:
+                        break
+                    
+                    if in_points:
+                        parts = line.strip().split()
+                        if len(parts) >= 5 and parts[0].isdigit():
+                            point_id = int(parts[0])
+                            attach_type = parts[1].upper()
+                            if attach_type == 'FIXED':  # This is an anchor
+                                x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                                anchors_info[point_id] = np.array([x, y, z])
+        except Exception as e:
+            self.logger.warning(f"Could not parse anchor positions: {e}")
+        
+        for k in sorted(fairleads.keys()):
+            fairlead_pos = fairleads[k]
+            rep.append(f"  Line {k}:")
+            rep.append(f"    Fairlead Position (platform local):")
+            rep.append(f"      X: {fairlead_pos[0]:>8.3f} m")
+            rep.append(f"      Y: {fairlead_pos[1]:>8.3f} m")
+            rep.append(f"      Z: {fairlead_pos[2]:>8.3f} m")
+            
+            # Add anchor info if available
+            # Assuming anchor point ID = fairlead point ID - 3 (typical OC4 convention)
+            anchor_id = k  # This might need adjustment based on your MoorDyn setup
+            for aid, anchor_pos in anchors_info.items():
+                # Try to match by checking if this anchor is associated with line k
+                # This is a heuristic - you may need to parse LINES section for exact mapping
+                rep.append(f"    Anchor Position (seabed, global):")
+                rep.append(f"      X: {anchor_pos[0]:>8.3f} m")
+                rep.append(f"      Y: {anchor_pos[1]:>8.3f} m")
+                rep.append(f"      Z: {anchor_pos[2]:>8.3f} m")
+                
+                # Calculate horizontal distance and depth
+                horiz_dist = np.sqrt(anchor_pos[0]**2 + anchor_pos[1]**2)
+                depth = abs(anchor_pos[2] - fairlead_pos[2])
+                rep.append(f"    Line Geometry:")
+                rep.append(f"      Horizontal Distance: {horiz_dist:>8.1f} m")
+                rep.append(f"      Vertical Drop      : {depth:>8.1f} m")
+                break  # Only show first matching anchor
+            
+            rep.append(f"    Force Calculation Method: {force_methods.get(k, 'unknown')}")
+            rep.append("")
+        
+        # --- 3E. Mooring Force Calculation Methods ---
+        rep.append("MOORING FORCE CALCULATION METHODS:")
         rep.append("-" * 80)
         for k, method in sorted(force_methods.items()):
             method_desc = {
@@ -795,10 +1043,37 @@ class DalembertRunner:
             }[method]
             rep.append(f"  Line {k}: {method_desc}")
         
-        rep.append(f"\nLoad extrema summary (t >= {analysis_start_time:.2f} s):\n" + "\n".join(extrema_lines))
-        report_path=os.path.join(args.outdir,'staticized_report.txt')
-        with open(report_path,'w') as f: f.write("\n".join(rep))
-        self.logger.info(f"Wrote report: {Path(report_path).name}")
+        rep.append("")
+        
+        # --- 3F. Mooring Statistics ---
+        rep.extend(mooring_stats_lines)
+        rep.append("")
+        
+        # --- 3G. Load Extrema ---
+        rep.append("LOAD EXTREMA SUMMARY:")
+        rep.append("=" * 80)
+        rep.append(f"Analysis Period: t >= {analysis_start_time:.2f} s")
+        rep.append("")
+        rep.extend(extrema_lines)
+        rep.append("")
+        
+        # --- 3H. Analysis Notes ---
+        rep.append("ANALYSIS NOTES:")
+        rep.append("-" * 80)
+        rep.append("  • All forces and moments are reported in the inertial (global) reference frame")
+        rep.append("  • PRP = Platform Reference Point (typically at [0, 0, 0])")
+        rep.append("  • CoM = Center of Mass (calculated from structural mass distribution)")
+        rep.append("  • d'Alembert method includes inertial forces/moments from platform acceleration")
+        rep.append("  • High-fidelity mooring forces use direct MoorDyn output (includes catenary effects)")
+        rep.append("  • Geometric approximation assumes straight-line mooring (reduced accuracy ~5-10%)")
+        rep.append("")
+        
+        # --- Write Report to File ---
+        report_path = os.path.join(args.outdir, 'staticized_report.txt')
+        with open(report_path, 'w') as f:
+            f.write("\n".join(rep))
+        
+        self.logger.info(f"Wrote comprehensive report: {Path(report_path).name}")
 
     def _parse_glue_text(self, path):
         if path is None: return None
@@ -839,14 +1114,58 @@ class DalembertRunner:
         return pd.DataFrame(out)
     
     def _parse_elastodyn_geometry(self, ed_path):
-        lines=_read_lines(ed_path, self.logger)
+        """Parse ElastoDyn file to extract key geometric parameters."""
+        lines = _read_lines(ed_path, self.logger)
+        
         def fget(key):
             for ln in lines:
-                if key in ln:
-                    try: return float(ln.strip().split()[0])
-                    except: pass
+                if key in ln and not ln.strip().startswith(('!', '#')):
+                    try:
+                        # Split and get first value, handle quoted strings
+                        value_str = ln.strip().split()[0].strip('"').strip("'")
+                        return float(value_str)
+                    except (ValueError, IndexError):
+                        pass
             return None
-        return {'YawBearing': np.array([0.,0.,fget('TowerHt') or 0.0]), 'TowerBase': np.array([0.,0.,fget('TowerBsHt') or 0.0])}
+        
+        # Extract tower file path to get more geometry info
+        tower_ht = fget('TowerHt')
+        tower_bs_ht = fget('TowerBsHt')
+        
+        # If not found, try alternative patterns
+        if tower_ht is None:
+            for ln in lines:
+                if 'TowerHt' in ln or 'TwrHeight' in ln:
+                    match = re.search(r'([\d.eE+-]+)', ln)
+                    if match:
+                        tower_ht = float(match.group(1))
+                        break
+        
+        if tower_bs_ht is None:
+            tower_bs_ht = 0.0  # Default if not found
+        
+        if tower_ht is None:
+            self.logger.warning("Could not extract TowerHt from ElastoDyn file. Using default 90m.")
+            tower_ht = 90.0
+        
+        yaw_bearing_z = tower_ht
+        tower_base_z = tower_bs_ht
+        
+        geo_data = {
+            'TowerHt': tower_ht,
+            'TowerBsHt': tower_bs_ht,
+            'YawBearing': np.array([0.0, 0.0, yaw_bearing_z]),
+            'TowerBase': np.array([0.0, 0.0, tower_base_z]),
+            'OverHang': fget('OverHang') or 0.0,
+            'ShftTilt': fget('ShftTilt') or 0.0,
+            'Twr2Shft': fget('Twr2Shft') or 0.0,
+            'TipRad': fget('TipRad') or 0.0,
+            'HubRad': fget('HubRad') or 0.0,
+        }
+        
+        self.logger.debug(f"Extracted geometry: TowerHt={tower_ht:.1f}m, TowerBsHt={tower_bs_ht:.1f}m")
+        
+        return geo_data
 
     def _parse_moordyn_points(self, md_path: str) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
         """
