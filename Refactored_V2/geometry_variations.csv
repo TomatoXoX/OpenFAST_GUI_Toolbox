@@ -1,0 +1,5 @@
+ID,MC_radius,MC_height_above_SWL,MC_height_below_SWL,MC_thickness,distance,UC_radius,UC_height_above_SWL,UC_height_below_SWL,UC_thickness,BC_radius,BC_height,BC_thickness
+101,3.25,12,20,0.03,28.8675,6,12,20,0.06,12,6,0.06
+102,3.25,12,20,0.03,28.8675,6,12,20,0.06,12,6,0.06
+201,7,12,22,0.09,60,12.5,14,22,0.065,25,8,0.065
+202,6.5,10,18,0.08,50,12,12,18,0.06,24,5,0.06

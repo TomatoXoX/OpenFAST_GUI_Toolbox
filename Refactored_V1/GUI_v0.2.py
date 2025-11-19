@@ -18,7 +18,12 @@ from pathlib import Path
 from datetime import datetime
 from math import cos, sin, radians
 from typing import List, Tuple, Dict, Any, Optional
-
+# --- NEW: Import the ADVANCED, AUTOMATIC geometry engine ---
+try:
+    import advanced_geometry_engine as engine
+    GEOMETRY_ENGINE_AVAILABLE = True
+except ImportError:
+    GEOMETRY_ENGINE_AVAILABLE = False
 # Suppress the deprecation warning from matplotlib about findfont
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 
@@ -31,13 +36,6 @@ try:
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
-
-# --- NEW: Check for Scipy dependency for Frequency Analysis ---
-try:
-    from scipy.signal import find_peaks
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
 
 # #############################################################################
 # --- BEGIN: Standalone Helper Functions (Refactored for Robustness) ---
@@ -173,7 +171,13 @@ class ConverterRunner:
         
         return df
 
+# #############################################################################
+# --- END: UPDATED Code from Convert_OUT2CSV.txt ---
+# #############################################################################
 
+# #############################################################################
+# --- BEGIN: Code from plot_analysis_unnormalized.txt ---
+# #############################################################################
 class PlottingRunner:
     def __init__(self, message_queue: queue.Queue, case_name: str, log_type: str):
         self.mq = message_queue
@@ -235,14 +239,14 @@ class PlottingRunner:
         mean_val, ymin, ymax, t_min, t_max, used_tail = self.compute_stats_after_threshold(df[time_col], df[y_col], mean_start)
         desc_base = f"≥ {mean_start:g}{' '+time_unit if time_unit else ''}" if used_tail else "all data"
         mean_text = f"{format_eng(mean_val)}{' '+y_unit if y_unit else ''}"
-        ax.axhline(y=mean_val, color=color, linestyle='--', linewidth=1.3, label=f"{label_prefix} -- Mean ({desc_base}): {mean_text}")
+        ax.axhline(y=mean_val, color=color, linestyle='--', linewidth=1.3, label=f"{label_prefix} — Mean ({desc_base}): {mean_text}")
         annotate_at_y_axis(ax, mean_val, mean_text)
         rng = float(ymax - ymin) if pd.notna(ymax) and pd.notna(ymin) else np.nan
         show_minmax = always_minmax or (pd.notna(rng) and rng >= max(minmax_range_frac * max(abs(mean_val), 1e-12), minmax_abs))
         if show_minmax and pd.notna(ymin) and pd.notna(ymax):
-            ax.axhline(y=ymin, color=color, linestyle=':', linewidth=1.2, label=f"{label_prefix} -- Min at t={t_min:.2f}: {format_eng(ymin)}")
+            ax.axhline(y=ymin, color=color, linestyle=':', linewidth=1.2, label=f"{label_prefix} — Min at t={t_min:.2f}: {format_eng(ymin)}")
             annotate_at_y_axis(ax, ymin, format_eng(ymin))
-            ax.axhline(y=ymax, color=color, linestyle='-.', linewidth=1.2, label=f"{label_prefix} -- Max at t={t_max:.2f}: {format_eng(ymax)}")
+            ax.axhline(y=ymax, color=color, linestyle='-.', linewidth=1.2, label=f"{label_prefix} — Max at t={t_max:.2f}: {format_eng(ymax)}")
             annotate_at_y_axis(ax, ymax, format_eng(ymax))
 
     def plot_group(self, time_col: str, df: pd.DataFrame, series_cols: List[str], series_labels: Dict[str, str], series_units: Dict[str, str], group_title: str, x_label: str, y_unit_hint: Optional[str], mean_start: float, time_unit: str, case_suffix: str, output_dir: str, file_stub: str, **kwargs):
@@ -278,12 +282,9 @@ class PlottingRunner:
         series_label, series_unit = {}, {}
         time_unit = self.get_unit_with_fallback(time_col, csv_units_map)
         x_label = f"{self.strip_units(time_col)}{f' [{time_unit}]' if time_unit else ''}"
-        
-        # --- FIX: Correctly categorize FairTen channels as scalars, not vectors ---
-        vector_bases = ['TwrBsF', 'TwrBsM', 'HydroF', 'HydroM']
-        scalar_channels = ['PtfmRoll', 'PtfmPitch', 'PtfmYaw', 'PtfmSurge', 'PtfmSway', 'PtfmHeave', 'FairTen1', 'FairTen2', 'FairTen3']
-        
-        channels_to_plot, found_scalars = [], {}
+        vector_bases = ['TwrBsF', 'TwrBsM', 'HydroF', 'HydroM', 'FAIRTEN1', 'FAIRTEN2', 'FAIRTEN3']
+        scalar_channels = ['PtfmRoll', 'PtfmPitch', 'PtfmYaw', 'PtfmSurge', 'PtfmSway', 'PtfmHeave']
+        channels_to_plot, fairten_mag_cols, found_scalars = [], {}, {}
 
         for base in vector_bases:
             self.log(f"Searching for vector components for base: '{base}'")
@@ -295,26 +296,22 @@ class PlottingRunner:
                     mag_vals = np.sqrt(pd.to_numeric(df[x_col],errors='coerce')**2 + pd.to_numeric(df[y_col],errors='coerce')**2 + pd.to_numeric(df[z_col],errors='coerce')**2)
                     mag_col = f"{base}_Magnitude"; df[mag_col] = mag_vals; channels_to_plot.append(mag_col)
                     series_label[mag_col], series_unit[mag_col] = mag_col, self.get_unit_with_fallback(x_col, csv_units_map)
+                    if base.upper().startswith("FAIRTEN"): fairten_mag_cols[base.upper()] = mag_col
                 except Exception as e: self.log(f"Warning: Failed to compute magnitude for '{base}': {e}")
             else:
                 self.log(f"  -> FAILED to find all three components for '{base}'. Skipping magnitude calculation.")
 
         for channel in scalar_channels:
-            # Find columns that start with the channel name (case-insensitive)
             matches = [c for c in df.columns if str(c).strip().lower().startswith(channel.lower())]
             if matches:
-                col = matches[0] # Take the first match
-                channels_to_plot.append(col)
+                col = matches[0]; channels_to_plot.append(col)
                 series_label[col], series_unit[col] = self.strip_units(col), self.get_unit_with_fallback(col, csv_units_map)
-                # Store the found column name using the original channel name as the key
                 found_scalars[channel] = col
 
         if not channels_to_plot: self.log("No channels were found to plot."); return
         os.makedirs(output_dir, exist_ok=True); self.log(f"Generating plots...")
-        plt.style.use('ggplot'); case_suffix = f" -- {case_name}" if case_name else ""
+        plt.style.use('ggplot'); case_suffix = f" — {case_name}" if case_name else ""
 
-        # This loop for individual plots remains the same and will now correctly
-        # plot FairTen1, FairTen2, etc. as individual scalar plots.
         for channel in channels_to_plot:
             fig, ax = plt.subplots(figsize=(12, 6))
             try: (h,) = ax.plot(df[time_col], df[channel], label=series_label.get(channel, self.strip_units(channel)))
@@ -329,238 +326,17 @@ class PlottingRunner:
             except Exception as e: self.log(f"Error saving plot for '{channel}': {e}")
             plt.close(fig)
 
-        # Group plots
         rpy_cols = [c for c in [found_scalars.get(k) for k in ['PtfmRoll', 'PtfmPitch', 'PtfmYaw']] if c]
         if rpy_cols: self.plot_group(time_col, df, rpy_cols, series_label, series_unit, "Platform Roll/Pitch/Yaw", x_label, "deg", mean_start, time_unit, case_suffix, output_dir, "Ptfm_RollPitchYaw", **kwargs)
-        
         ssh_cols = [c for c in [found_scalars.get(k) for k in ['PtfmSurge', 'PtfmSway', 'PtfmHeave']] if c]
         if ssh_cols: self.plot_group(time_col, df, ssh_cols, series_label, series_unit, "Platform Surge/Sway/Heave", x_label, "m", mean_start, time_unit, case_suffix, output_dir, "Ptfm_SurgeSwayHeave", **kwargs)
-        
-        # --- FIX: New, cleaner logic for gathering fairlead tension columns for the group plot ---
-        fair_cols = [c for c in [found_scalars.get(k) for k in ['FairTen1', 'FairTen2', 'FairTen3']] if c]
-        if fair_cols: 
-            self.plot_group(time_col, df, fair_cols, series_label, series_unit, "Fairlead Tensions", x_label, "N", mean_start, time_unit, case_suffix, output_dir, "Fairlead_Tensions", **kwargs)
-        
+        fair_cols = [c for c in [fairten_mag_cols.get(k) for k in ['FAIRTEN1', 'FAIRTEN2', 'FAIRTEN3']] if c]
+        if fair_cols: self.plot_group(time_col, df, fair_cols, series_label, series_unit, "Fairlead Tension Magnitudes", x_label, "N", mean_start, time_unit, case_suffix, output_dir, "FAIRTEN_Magnitudes", **kwargs)
         self.log("Plotting complete.")
 
 # #############################################################################
 # --- END: Code from plot_analysis_unnormalized.txt ---
 # #############################################################################
-
-# #############################################################################
-# --- BEGIN: NEW Frequency Analysis Implementation ---
-# #############################################################################
-
-class FrequencyAnalysisRunner:
-    """
-    Encapsulates the logic for calculating natural frequencies from free decay tests.
-    """
-    def __init__(self, message_queue: queue.Queue, case_name: str, log_type: str):
-        self.mq = message_queue
-        self.case_name = case_name
-        self.log_type = log_type
-        self.CANONICAL_COLUMN_ALIASES: Dict[str, str] = {
-            "fairten1": "FAIRTEN1", "fair1ten": "FAIRTEN1", "fairten2": "FAIRTEN2",
-            "fair2ten": "FAIRTEN2", "fairten3": "FAIRTEN3", "fair3ten": "FAIRTEN3",
-            "anchten1": "ANCHTEN1", "anch1ten": "ANCHTEN1", "anchten2": "ANCHTEN2",
-            "anch2ten": "ANCHTEN2", "anchten3": "ANCHTEN3", "anch3ten": "ANCHTEN3",
-        }
-
-    def log(self, message: str):
-        self.mq.put((self.log_type, f"[{self.case_name}][Freq] {message}"))
-
-    def _canonicalize_column_names(self, df: pd.DataFrame, units_map: Dict[str, str]) -> None:
-        """Harmonize column names using CANONICAL_COLUMN_ALIASES."""
-        rename_map: Dict[str, str] = {}
-        for col in list(df.columns):
-            key = str(col).strip().lower()
-            canonical = self.CANONICAL_COLUMN_ALIASES.get(key)
-            if not canonical or canonical == col:
-                continue
-            if canonical in df.columns:
-                if df[canonical].equals(df[col]):
-                    df.drop(columns=[col], inplace=True)
-                    if col in units_map:
-                        unit_value = units_map.pop(col)
-                        if canonical not in units_map or not units_map[canonical]:
-                            units_map[canonical] = unit_value
-                continue
-            rename_map[col] = canonical
-        if rename_map:
-            df.rename(columns=rename_map, inplace=True)
-            for old, new in rename_map.items():
-                unit_value = units_map.pop(old, None)
-                if unit_value is not None:
-                    if new not in units_map or not units_map[new]:
-                        units_map[new] = unit_value
-
-    def _read_fast_csv(self, csv_file: str) -> Tuple[pd.DataFrame, Dict[str, str]]:
-        """Reads a CSV file, handling headers and units."""
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"CSV file not found: {csv_file}")
-
-        df_raw = pd.read_csv(csv_file, comment="#", skip_blank_lines=True, engine="python")
-        if df_raw.empty:
-            raise ValueError(f"CSV '{csv_file}' appears to be empty after removing metadata.")
-
-        df_raw.columns = [str(col).strip() for col in df_raw.columns]
-        first_row = df_raw.iloc[0]
-        units_map: Dict[str, str] = {}
-
-        def looks_like_units(value: object) -> bool:
-            return isinstance(value, str) and bool(re.search(r"[A-Za-z]", value))
-
-        if any(looks_like_units(val) for val in first_row):
-            for col in df_raw.columns:
-                unit_token = str(first_row[col])
-                units_map[col] = re.sub(r"^[[\(\s]*|[]\)\s]*$", "", unit_token).strip()
-            df = df_raw.iloc[1:].reset_index(drop=True)
-        else:
-            df = df_raw.copy()
-            units_map = {col: "" for col in df.columns}
-
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        self._canonicalize_column_names(df, units_map)
-        return df, units_map
-
-    def _calculate_frequencies_from_decay(self, time: np.ndarray, data: np.ndarray) -> Dict:
-        """Analyzes a free decay signal to find damped and undamped frequencies."""
-        if len(time) != len(data):
-            raise ValueError("Time and data arrays must have the same length.")
-
-        prominence_threshold = (np.max(data) - np.min(data)) * 0.1
-        peak_indices, _ = find_peaks(data, prominence=prominence_threshold)
-
-        if len(peak_indices) < 2:
-            raise ValueError("Could not find at least 2 significant peaks. Check the signal or adjust the analysis start time.")
-
-        peak_times = time[peak_indices]
-        peak_values = data[peak_indices]
-
-        damped_periods = np.diff(peak_times)
-        mean_damped_period = np.mean(damped_periods)
-        damped_frequency_hz = 1 / mean_damped_period
-        damped_frequency_rad = 2 * np.pi * damped_frequency_hz
-
-        log_decrements = []
-        for i in range(len(peak_values) - 1):
-            if peak_values[i] > 0 and peak_values[i+1] > 0:
-                log_decrements.append(np.log(peak_values[i] / peak_values[i+1]))
-
-        if not log_decrements:
-            raise ValueError("Could not calculate logarithmic decrement. Are peak values valid?")
-
-        mean_log_decrement = np.mean(log_decrements)
-        damping_ratio = mean_log_decrement / np.sqrt((2 * np.pi)**2 + mean_log_decrement**2)
-
-        if damping_ratio >= 1:
-            natural_frequency_rad = np.nan
-            natural_period = np.nan
-        else:
-            natural_frequency_rad = damped_frequency_rad / np.sqrt(1 - damping_ratio**2)
-            natural_period = 2 * np.pi / natural_frequency_rad
-
-        return {
-            "damped_period_s": mean_damped_period,
-            "damped_frequency_hz": damped_frequency_hz,
-            "damped_frequency_rad_s": damped_frequency_rad,
-            "logarithmic_decrement": mean_log_decrement,
-            "damping_ratio_zeta": damping_ratio,
-            "natural_period_s": natural_period,
-            "natural_frequency_rad_s": natural_frequency_rad,
-            "peak_indices": peak_indices.tolist(),
-            "peak_times": peak_times.tolist(),
-            "peak_values": peak_values.tolist(),
-        }
-
-    def _plot_decay_analysis(self, time, data, results, column_name, units, filename):
-        """Generates and saves a plot of the free decay analysis."""
-        fig, ax = plt.subplots(figsize=(12, 7))
-        ax.plot(time, data, label=f'"{column_name}" Signal (Mean Subtracted)', color='cornflowerblue', zorder=2)
-        ax.plot(results["peak_times"], results["peak_values"], 'o', color='crimson', markersize=8, label=f'Detected Peaks ({len(results["peak_times"])} found)', zorder=3)
-
-        A0 = results["peak_values"][0]
-        zeta = results["damping_ratio_zeta"]
-        wn = results["natural_frequency_rad_s"]
-        envelope_time = np.linspace(results["peak_times"][0], time[-1], 500)
-        decay_envelope = A0 * np.exp(-zeta * wn * (envelope_time - envelope_time[0]))
-        ax.plot(envelope_time, decay_envelope, '--', color='black', label='Fitted Exponential Decay Envelope', zorder=4)
-        ax.plot(envelope_time, -decay_envelope, '--', color='black', zorder=4)
-
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-        ax.set_xlabel("Time (s)", fontsize=12)
-        ax.set_ylabel(f"Amplitude ({units})", fontsize=12)
-        ax.set_title(f'Free Decay Analysis for "{column_name}"', fontsize=14, weight='bold')
-        ax.legend(loc='upper right')
-
-        stats_text = (
-            f"Damped Natural Frequency (ωd): {results['damped_frequency_rad_s']:.4f} rad/s\n"
-            f"Damped Period (Td): {results['damped_period_s']:.4f} s\n"
-            f"--- Damping ---\n"
-            f"Damping Ratio (ζ): {results['damping_ratio_zeta']:.4f}\n"
-            f"Logarithmic Decrement (δ): {results['logarithmic_decrement']:.4f}\n"
-            f"--- Undamped System ---\n"
-            f"Undamped Natural Frequency (ωn): {results['natural_frequency_rad_s']:.4f} rad/s\n"
-            f"Undamped Natural Period (Tn): {results['natural_period_s']:.4f} s"
-        )
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-        ax.text(0.05, 0.95, stats_text, transform=ax.transAxes, fontsize=10, verticalalignment='top', bbox=props)
-        plt.tight_layout()
-        plt.savefig(filename, dpi=150)
-        plt.close(fig)
-        self.log(f"Saved frequency analysis plot: {Path(filename).name}")
-
-    def run(self, csv_file: str, column_name: str, output_dir: str, start_time: float):
-        """Main execution method for the frequency analysis."""
-        self.log(f"Starting frequency analysis for column '{column_name}'")
-        df, units_map = self._read_fast_csv(csv_file)
-
-        analysis_col = column_name
-        if analysis_col not in df.columns:
-            for alias, canonical in self.CANONICAL_COLUMN_ALIASES.items():
-                if alias == column_name.strip().lower() and canonical in df.columns:
-                    analysis_col = canonical
-                    break
-            else:
-                available_cols = " | ".join(df.columns)
-                raise KeyError(f"Column '{column_name}' not found. Available columns: {available_cols}")
-
-        self.log(f"Analyzing canonical column: '{analysis_col}'")
-        df_filtered = df[df['Time'] >= start_time].copy()
-        if df_filtered.empty:
-            raise ValueError(f"No data available after start_time={start_time}s.")
-
-        time_series = df_filtered['Time'].to_numpy()
-        data_series_raw = df_filtered[analysis_col].to_numpy()
-        mean_value = np.mean(data_series_raw)
-        data_series_zero_meaned = data_series_raw - mean_value
-        self.log(f"Subtracted signal mean ({mean_value:.4f}) for peak analysis.")
-
-        results = self._calculate_frequencies_from_decay(time_series, data_series_zero_meaned)
-
-        # Save numerical results to a JSON file
-        results_path = Path(output_dir) / f"frequency_results_{analysis_col}.json"
-        with open(results_path, 'w') as f:
-            json.dump(results, f, indent=4)
-        self.log(f"Saved numerical results to: {results_path.name}")
-
-        # Save plot
-        plot_path = Path(output_dir) / f"frequency_plot_{analysis_col}.png"
-        self._plot_decay_analysis(
-            time_series,
-            data_series_zero_meaned,
-            results,
-            analysis_col,
-            units_map.get(analysis_col, '-'),
-            filename=str(plot_path)
-        )
-
-# #############################################################################
-# --- END: NEW Frequency Analysis Implementation ---
-# #############################################################################
-
 
 # #############################################################################
 # --- BEGIN: NEW d'Alembert Implementation ---
@@ -627,7 +403,7 @@ class DalembertRunner:
 
             refs = _find_fst_refs(args.fst, self.logger)
             geo = self._parse_elastodyn_geometry(refs['EDFile'])
-            fairleads, anchors = self._parse_moordyn_points(refs['MooringFile'])
+            fairleads = self._parse_moordyn_points(refs['MooringFile'])
             PRP, yaw_xyz, twrbase_xyz = np.zeros(3), geo['YawBearing'], geo['TowerBase']
 
             df = self._parse_glue_text(args.glue_out)
@@ -637,15 +413,14 @@ class DalembertRunner:
             if df_md is not None and 'time' in df_md.columns:
                 df_md = df_md.set_index('time')
 
-            # --- Pass the 'geo' and 'anchors' objects to the calculation method ---
-            self._perform_dalembert_calculations(df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, anchors, analysis_start_time, geo)
+            self._perform_dalembert_calculations(df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time)
 
         except Exception as e:
             self.logger.error(f"FATAL ERROR in d'Alembert analysis: {e}\n{traceback.format_exc()}")
         finally:
             self.logger.info("========== d'Alembert staticization: END ==========")
     
-    def _perform_dalembert_calculations(self, df: pd.DataFrame, df_md: Optional[pd.DataFrame], args: Any, m: float, r_com: np.ndarray, I: np.ndarray, PRP: np.ndarray, yaw_xyz: np.ndarray, twrbase_xyz: np.ndarray, fairleads: Dict[int, np.ndarray], anchors: Dict[int, np.ndarray], analysis_start_time: float, geo: Dict):
+    def _perform_dalembert_calculations(self, df, df_md, args, m, r_com, I, PRP, yaw_xyz, twrbase_xyz, fairleads, analysis_start_time):
         hydro_cols=['hydrofxi','hydrofyi','hydrofzi','hydromxi','hydromyi','hydromzi']
         
         if all(c in df.columns for c in ['twrbsfxt','twrbsfyt','twrbsfzt','twrbsmxt','twrbsmyt','twrbsmzt']):
@@ -661,70 +436,6 @@ class DalembertRunner:
         n=len(df)
         self.logger.info(f"Beginning time loop over {n} rows")
         
-        # NEW: Pre-check which method will be used for each line
-        force_methods = {}  # line_id -> 'moordyn_main' | 'moordyn_file' | 'geometric'
-
-        # DIAGNOSTIC: Log available mooring-related columns
-        mooring_cols = [c for c in df.columns if any(keyword in c.lower() for keyword in ['con', 'line', 'fair', 'moor'])]
-        if mooring_cols:
-            self.logger.debug(f"Available mooring-related columns: {mooring_cols}")
-
-        for k in sorted(fairleads.keys()):
-            # Try connection point forces first (con{k+3} for fairleads, since points 4/5/6 are fairleads)
-            con_point = k + 3  # Point 4/5/6 for Line 1/2/3
-            con_cols = [f'con{con_point}fx', f'con{con_point}fy', f'con{con_point}fz']
-            
-            # Case-insensitive check - see if all three components exist
-            con_cols_found = []
-            for target in con_cols:
-                matched = next((c for c in df.columns if c.lower() == target.lower()), None)
-                if matched:
-                    con_cols_found.append(matched)
-            
-            if len(con_cols_found) == 3:
-                force_methods[k] = 'moordyn_main'
-                if k == 1:  # Log once for debugging
-                    self.logger.debug(f"Line {k}: Found connection point columns {con_cols_found}")
-            else:
-                # Try legacy line force components
-                line_cols = [f'line{k}fx', f'line{k}fy', f'line{k}fz']
-                line_cols_found = []
-                for target in line_cols:
-                    matched = next((c for c in df.columns if c.lower() == target.lower()), None)
-                    if matched:
-                        line_cols_found.append(matched)
-                
-                if len(line_cols_found) == 3:
-                    force_methods[k] = 'moordyn_main'
-                    if k == 1:
-                        self.logger.debug(f"Line {k}: Found line force columns {line_cols_found}")
-                # Try separate MoorDyn file
-                elif df_md is not None:
-                    md_con_found = all(any(c.lower() == f'con{con_point}f{comp}'.lower() for c in df_md.columns) for comp in ['x', 'y', 'z'])
-                    if md_con_found:
-                        force_methods[k] = 'moordyn_file'
-                    else:
-                        force_methods[k] = 'geometric'
-                else:
-                    force_methods[k] = 'geometric'
-        
-        # Log the detection summary
-        self.logger.info("Mooring force calculation method detection:")
-        for k, method in sorted(force_methods.items()):
-            if method == 'moordyn_main':
-                self.logger.info(f"  Line {k}: Using MoorDyn force components from main output (HIGH FIDELITY)")
-            elif method == 'moordyn_file':
-                self.logger.info(f"  Line {k}: Using MoorDyn force components from separate file (HIGH FIDELITY)")
-            else:
-                self.logger.warning(f"  Line {k}: Using geometric approximation (REDUCED ACCURACY)")
-        
-        if any(m == 'geometric' for m in force_methods.values()):
-            self.logger.warning("╔════════════════════════════════════════════════════════════╗")
-            self.logger.warning("║ NOTICE: Using straight-line approximation for some lines  ║")
-            self.logger.warning("║ For improved accuracy, add Line{k}Fx/Fy/Fz outputs to     ║")
-            self.logger.warning("║ your MoorDyn input file's OUTPUTS section.                ║")
-            self.logger.warning("╚════════════════════════════════════════════════════════════╝")
-        
         for i in range(n):
             row=df.iloc[i]
             t=row['time']
@@ -735,198 +446,21 @@ class DalembertRunner:
             ED_F_loc=row[edF].values
             ED_M_loc=row[edM].values
 
-            R_plat = self._rotmat_from_rpy_deg(row['ptfmroll'], row['ptfmpitch'], row['ptfmyaw'])
-            if args.rotate_ed:
-                ED_F = R_plat @ ED_F_loc
-                ED_M = R_plat @ ED_M_loc
-            else:
-                ED_F = ED_F_loc
-                ED_M = ED_M_loc
+            R = self._rotmat_from_rpy_deg(row['ptfmroll'], row['ptfmpitch'], row['ptfmyaw']) if args.rotate_ed else np.eye(3)
+            ED_F = R @ ED_F_loc
+            ED_M = R @ ED_M_loc
             ED_M_at_PRP = ED_M + np.cross((PRP - ed_point), ED_F)
 
-            # NEW: Enhanced mooring force calculation with validation
-            Moor_F = np.zeros(3)
-            Moor_M = np.zeros(3)
-            fair_entries = []
-            platform_pos = row[['ptfmsurge', 'ptfmsway', 'ptfmheave']].values
-
-            for k, rk_local in sorted(fairleads.items()):
+            Moor_F=np.zeros(3); Moor_M=np.zeros(3); fair_entries=[]
+            for k, rk in fairleads:
                 Fk = np.zeros(3)
-                method_used = force_methods[k]
-                
-                # Calculate global fairlead position (needed for all methods)
-                rk_global = platform_pos + R_plat @ rk_local
-                
-                # Method 1 & 2: MoorDyn Force Components
-                if method_used == 'moordyn_main':
-                    # Try multiple column name variants
-                    con_point = k + 3  # Fairlead line k corresponds to point k+3
-                    md_cols_variants = [
-                        # Connection point forces (most accurate for fairleads)
-                        [f'con{con_point}fx', f'con{con_point}fy', f'con{con_point}fz'],
-                        # Legacy line forces (less accurate - may be anchor-end)
-                        [f'line{k}fx', f'line{k}fy', f'line{k}fz'],
-                        # Fair prefix (some MoorDyn versions)
-                        [f'fair{k}fx', f'fair{k}fy', f'fair{k}fz'],
-                    ]
-                    
-                    actual_cols = None
-                    matched_variant_name = None
-                    
-                    # Try each variant until we find a match (case-insensitive)
-                    for variant_idx, variant in enumerate(md_cols_variants):
-                        temp_cols = []
-                        all_found = True
-                        for target_col in variant:
-                            # Case-insensitive search
-                            matched_col = next((c for c in df.columns if c.lower() == target_col.lower()), None)
-                            if matched_col:
-                                temp_cols.append(matched_col)
-                            else:
-                                all_found = False
-                                break
-                        
-                        if all_found:
-                            actual_cols = temp_cols
-                            matched_variant_name = ['Con', 'Line', 'Fair'][variant_idx]
-                            break
-                    
-                    # DIAGNOSTIC: Log what we found (only at first timestep)
-                    if i == 0:
-                        if actual_cols:
-                            self.logger.info(f"Line {k} - Successfully matched {matched_variant_name} columns: {actual_cols}")
-                        else:
-                            available_cols = [c for c in df.columns if any(kw in c.lower() for kw in ['con', 'line', 'fair'])]
-                            self.logger.error(f"Line {k} - Could not find force columns! Available: {available_cols[:10]}")
-                    
-                    if actual_cols:
-                        try:
-                            Fk = row[actual_cols].values.astype(float)
-                            
-                            # DIAGNOSTIC: Log raw values at first timestep
-                            if i == 0:
-                                self.logger.info(f"Line {k} - Raw force components: Fx={Fk[0]:.2e}, Fy={Fk[1]:.2e}, Fz={Fk[2]:.2e}")
-                                fk_mag = np.linalg.norm(Fk)
-                                self.logger.info(f"Line {k} - Force magnitude: {fk_mag:.2e} N")
-                            
-                            # Validation: Check if force components are sensible
-                            if np.all(Fk == 0):
-                                self.logger.warning(f"t={t:.2f}, Line {k}: MoorDyn force components are all zero!")
-                            
-                        except Exception as e:
-                            self.logger.error(f"t={t:.2f}, Line {k}: Error reading force values: {e}")
-                            method_used = 'geometric'
-                    else:
-                        self.logger.error(f"t={t:.2f}, Line {k}: No matching force columns found. Falling back.")
-                        method_used = 'geometric'
-                    
-                elif method_used == 'moordyn_file':
-                    md_cols_variants = [
-                        [f'line{k}fx', f'line{k}fy', f'line{k}fz'],
-                        [f'Line{k}Fx', f'Line{k}Fy', f'Line{k}Fz'],
-                        [f'LINE{k}FX', f'LINE{k}FY', f'LINE{k}FZ'],
-                    ]
-                    
+                md_cols = [f'fairten{k}x', f'fairten{k}y', f'fairten{k}z']
+                if all(c in row.index for c in md_cols):
+                    Fk = row[md_cols].values
+                elif df_md is not None and all(c in df_md.columns for c in md_cols):
                     idx = (df_md.index - t).abs().argmin()
-                    actual_cols = None
-                    
-                    for variant in md_cols_variants:
-                        temp_cols = []
-                        all_found = True
-                        for target_col in variant:
-                            matched_col = next((c for c in df_md.columns if c.lower() == target_col.lower()), None)
-                            if matched_col:
-                                temp_cols.append(matched_col)
-                            else:
-                                all_found = False
-                                break
-                        
-                        if all_found:
-                            actual_cols = temp_cols
-                            break
-                    
-                    if actual_cols:
-                        try:
-                            Fk = df_md.iloc[idx][actual_cols].values.astype(float)
-                        except Exception as e:
-                            self.logger.error(f"t={t:.2f}, Line {k}: Error reading MoorDyn file: {e}")
-                            method_used = 'geometric'
-                    else:
-                        self.logger.error(f"t={t:.2f}, Line {k}: No matching columns in MoorDyn file. Falling back.")
-                        method_used = 'geometric'
-                
-                # Method 3: Geometric Approximation (Fallback)
-                if method_used == 'geometric':
-                    # Try case-insensitive matching for tension column
-                    tension_col_variants = [f'fairten{k}', f'FairTen{k}', f'FAIRTEN{k}']
-                    tension_col = None
-                    
-                    for variant in tension_col_variants:
-                        matched = next((c for c in row.index if c.lower() == variant.lower()), None)
-                        if matched:
-                            tension_col = matched
-                            break
-                    
-                    if tension_col:
-                        tension_mag = row[tension_col]
-                        ak_global = anchors.get(k)
-                        
-                        if ak_global is not None:
-                            direction_vec = ak_global - rk_global
-                            norm = np.linalg.norm(direction_vec)
-                            if norm > 1e-6:
-                                Fk = tension_mag * (direction_vec / norm)
-                                if i == 0:
-                                    self.logger.info(f"Line {k} - Using geometric approximation: tension={tension_mag:.2e} N")
-                            else:
-                                self.logger.warning(f"t={t:.2f}, Line {k}: Fairlead and anchor positions coincident.")
-                        else:
-                            self.logger.warning(f"t={t:.2f}, Line {k}: Anchor position not found.")
-                    else:
-                        self.logger.warning(f"t={t:.2f}, Line {k}: Could not find tension column. Force will be zero.")
-                
-                # ENHANCED VALIDATION: Compare with FairTen{k}
-                tension_col_variants = [f'fairten{k}', f'FairTen{k}', f'FAIRTEN{k}']
-                actual_tension_col = None
-                
-                for variant in tension_col_variants:
-                    matched = next((c for c in row.index if c.lower() == variant.lower()), None)
-                    if matched:
-                        actual_tension_col = matched
-                        break
-                
-                if actual_tension_col and not np.all(Fk == 0):
-                    reported_tension = row[actual_tension_col]
-                    computed_magnitude = np.linalg.norm(Fk)
-                    
-                    absolute_error = abs(computed_magnitude - reported_tension)
-                    relative_error = absolute_error / max(reported_tension, 1e-6)
-                    
-                    # Log at first timestep for all lines
-                    if i == 0:
-                        self.logger.info(
-                            f"Line {k} validation: Computed magnitude={computed_magnitude:.2e} N, "
-                            f"Reported tension={reported_tension:.2e} N, "
-                            f"Relative error={relative_error*100:.2f}%"
-                        )
-                    
-                    # Warn if >10% difference
-                    if relative_error > 0.10:
-                        self.logger.warning(
-                            f"t={t:.2f}, Line {k}: Force magnitude mismatch! "
-                            f"Computed={computed_magnitude:.2e} N, Reported={reported_tension:.2e} N, "
-                            f"Error={relative_error*100:.1f}%"
-                        )
-    
-                # Calculate moment contribution (using global position and force)
-                Moor_M += np.cross(rk_global, Fk)
-                Moor_F += Fk
-                fair_entries.append((k, rk_local, Fk, method_used))
-
-            # Log mooring force summary periodically
-            if i % (getattr(args, 'log_step', 100) * 10) == 0:
-                progress_pct = (i / n) * 100
-                self.logger.debug(f"Processing: {progress_pct:.1f}% complete (t={t:.2f}s)")
+                    Fk = df_md.iloc[idx][md_cols].values
+                Moor_F += Fk; Moor_M += np.cross(rk, Fk); fair_entries.append((k, rk, Fk))
 
             F_ext = H_F + Moor_F + ED_F
             M_ext_at_PRP = H_M + Moor_M + ED_M_at_PRP
@@ -938,27 +472,7 @@ class DalembertRunner:
             
             add('HydroDyn_Total_at_PRP', H_F, PRP, H_M)
             add(ed_name, ED_F, ed_point, ED_M)
-            
-            # NEW: Include method information in load names
-            for k, rk, Fk, method in fair_entries:
-                method_label = {
-                    'moordyn_main': 'MoorDyn_HiFi',
-                    'moordyn_file': 'MoorDyn_HiFi_File',
-                    'geometric': 'MoorDyn_Approx'
-                }[method]
-                add(f'{method_label}_Fairlead{k}', Fk, rk, None)
-            if i % 100 == 0:
-                for k, _, Fk, method in fair_entries:
-                    if not hasattr(self, 'moor_force_samples'):
-                        self.moor_force_samples = {k: [] for k in sorted(fairleads.keys())}
-                    self.moor_force_samples[k].append({
-                        'time': t,
-                        'Fx': Fk[0],
-                        'Fy': Fk[1],
-                        'Fz': Fk[2],
-                        'magnitude': np.linalg.norm(Fk),
-                        'method': method
-                    })
+            for k, rk, Fk in fair_entries: add(f'MoorDyn_Fairlead{k}', Fk, rk, None)
             add('Inertia_Trans_CoM', F_inert, r_com, None)
             add('Inertia_Rot_CoM', np.zeros(3), r_com, M_inert)
             
@@ -970,318 +484,36 @@ class DalembertRunner:
         loads_csv=os.path.join(args.outdir, 'loads_timeseries_staticized.csv')
         loads_df.to_csv(loads_csv, index=False)
         self.logger.info(f"Wrote timeseries loads: {Path(loads_csv).name}")
-        self._write_reports(loads_df, args, geo, fairleads, m, r_com, I, analysis_start_time, force_methods)
-                
+        self._write_reports(loads_df, args, geo, fairleads, m, r_com, I, analysis_start_time)
 
-            
-
-    def _write_reports(self, loads_df, args, geo, fairleads, m, r_com, I, analysis_start_time, force_methods):
-        """
-        Generate comprehensive staticized load reports with geometry, simulation parameters,
-        and mooring force statistics.
-        """
-        # --- 1. Extrema Analysis ---
-        extrema_lines = []
+    def _write_reports(self, loads_df, args, geo, fairleads, m, r_com, I, analysis_start_time):
+        extrema_lines=[]
         total = loads_df[(loads_df['LoadName']=='TOTAL_with_Inertia_at_PRP') & (loads_df['Time'] >= analysis_start_time)].copy()
-        
         if total.empty:
             extrema_lines.append(f"No TOTAL_with_Inertia_at_PRP samples at or after {analysis_start_time:.2f}s; extrema unavailable.")
         else:
             Fmag = np.sqrt(total['Fx']**2 + total['Fy']**2 + total['Fz']**2)
             Mmag = np.sqrt(total['Mx']**2 + total['My']**2 + total['Mz']**2)
             
-            def pick_extrema(series): 
-                return series.idxmin(), series.idxmax(), (series - series.mean()).abs().idxmin()
-            
+            def pick_extrema(series): return series.idxmin(), series.idxmax(), (series - series.mean()).abs().idxmin()
             F_min_i, F_max_i, F_avg_i = pick_extrema(Fmag)
             M_min_i, M_max_i, M_avg_i = pick_extrema(Mmag)
             
-            cases = {
-                'F_min': F_min_i, 'F_max': F_max_i, 'F_avg': F_avg_i, 
-                'M_min': M_min_i, 'M_max': M_max_i, 'M_avg': M_avg_i
-            }
-            extrema_data = [
-                {'Case': name, **total.loc[idx][['Time','Fx','Fy','Fz','Mx','My','Mz']]} 
-                for name, idx in cases.items()
-            ]
+            cases = {'F_min': F_min_i, 'F_max': F_max_i, 'F_avg': F_avg_i, 'M_min': M_min_i, 'M_max': M_max_i, 'M_avg': M_avg_i}
+            extrema_data = [{'Case': name, **total.loc[idx][['Time','Fx','Fy','Fz','Mx','My','Mz']]} for name, idx in cases.items()]
             extrema_df = pd.DataFrame(extrema_data)
             extrema_csv = os.path.join(args.outdir, f'loads_extrema_after{int(analysis_start_time)}s.csv')
             extrema_df.to_csv(extrema_csv, index=False)
             self.logger.info(f"Wrote extrema CSV: {Path(extrema_csv).name}")
             extrema_lines = extrema_df.to_string(index=False).split('\n')
 
-        # --- 2. Mooring Force Statistics (if samples collected) ---
-        mooring_stats_lines = []
-        mooring_stats_lines.append("\nMooring Force Statistics:")
-        mooring_stats_lines.append("=" * 80)
-        
-        if hasattr(self, 'moor_force_samples') and self.moor_force_samples:
-            for k in sorted(fairleads.keys()):
-                samples = self.moor_force_samples.get(k, [])
-                if not samples:
-                    continue
-                
-                # Extract magnitudes and components
-                magnitudes = [s['magnitude'] for s in samples]
-                fx_vals = [s['Fx'] for s in samples]
-                fy_vals = [s['Fy'] for s in samples]
-                fz_vals = [s['Fz'] for s in samples]
-                method = samples[0]['method']
-                
-                # Calculate statistics
-                mag_mean = np.mean(magnitudes)
-                mag_std = np.std(magnitudes)
-                mag_min = np.min(magnitudes)
-                mag_max = np.max(magnitudes)
-                
-                fx_mean = np.mean(fx_vals)
-                fy_mean = np.mean(fy_vals)
-                fz_mean = np.mean(fz_vals)
-                
-                method_label = {
-                    'moordyn_main': 'HIGH FIDELITY (MoorDyn Components)',
-                    'moordyn_file': 'HIGH FIDELITY (MoorDyn File)',
-                    'geometric': 'REDUCED ACCURACY (Geometric Approximation)'
-                }[method]
-                
-                mooring_stats_lines.append(f"\nLine {k} - {method_label}:")
-                mooring_stats_lines.append("-" * 80)
-                mooring_stats_lines.append(f"  Force Magnitude:")
-                mooring_stats_lines.append(f"    Mean:   {mag_mean:.2e} N  (Std Dev: {mag_std:.2e} N)")
-                mooring_stats_lines.append(f"    Min:    {mag_min:.2e} N")
-                mooring_stats_lines.append(f"    Max:    {mag_max:.2e} N")
-                mooring_stats_lines.append(f"    Range:  {mag_max - mag_min:.2e} N")
-                mooring_stats_lines.append(f"  Mean Force Components:")
-                mooring_stats_lines.append(f"    Fx: {fx_mean:>12.2e} N  (surge direction)")
-                mooring_stats_lines.append(f"    Fy: {fy_mean:>12.2e} N  (sway direction)")
-                mooring_stats_lines.append(f"    Fz: {fz_mean:>12.2e} N  (heave direction)")
-                
-                # Find time of min/max
-                t_min = samples[magnitudes.index(mag_min)]['time']
-                t_max = samples[magnitudes.index(mag_max)]['time']
-                mooring_stats_lines.append(f"  Extrema Occurrence:")
-                mooring_stats_lines.append(f"    Minimum occurred at t={t_min:.2f}s")
-                mooring_stats_lines.append(f"    Maximum occurred at t={t_max:.2f}s")
-            
-            # Total mooring force summary
-            mooring_stats_lines.append("\n" + "=" * 80)
-            mooring_stats_lines.append("Combined Mooring System:")
-            mooring_stats_lines.append("-" * 80)
-            
-            # Calculate total force at each sampled timestep
-            sample_times = sorted(set(s['time'] for samples in self.moor_force_samples.values() for s in samples))
-            total_forces = []
-            for t in sample_times:
-                total_F = np.zeros(3)
-                for k in sorted(fairleads.keys()):
-                    sample = next((s for s in self.moor_force_samples[k] if abs(s['time'] - t) < 1e-6), None)
-                    if sample:
-                        total_F += np.array([sample['Fx'], sample['Fy'], sample['Fz']])
-                total_forces.append(np.linalg.norm(total_F))
-            
-            if total_forces:
-                total_mean = np.mean(total_forces)
-                total_std = np.std(total_forces)
-                total_min = np.min(total_forces)
-                total_max = np.max(total_forces)
-                
-                mooring_stats_lines.append(f"  Combined Magnitude:")
-                mooring_stats_lines.append(f"    Mean:   {total_mean:.2e} N  (Std Dev: {total_std:.2e} N)")
-                mooring_stats_lines.append(f"    Min:    {total_min:.2e} N")
-                mooring_stats_lines.append(f"    Max:    {total_max:.2e} N")
-                mooring_stats_lines.append(f"    Range:  {total_max - total_min:.2e} N")
-        else:
-            mooring_stats_lines.append("  No mooring force samples collected during simulation.")
-        # --- 3. Build the Report ---
-        rep = []
-        rep.append("=" * 80)
-        rep.append(f"d'ALEMBERT STATICIZATION REPORT: {self.case_name}")
-        rep.append("=" * 80)
-        rep.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        rep.append(f"Analysis Method: d'Alembert Staticization (Quasi-Static Load Extraction)")
-        rep.append("")
-        
-        # --- 3A. Simulation Parameters ---
-        rep.append("SIMULATION PARAMETERS:")
-        rep.append("-" * 80)
-        
-        try:
-            fst_path = Path(args.fst)
-            if fst_path.exists():
-                fst_content = fst_path.read_text(encoding='utf-8', errors='ignore')
-                
-                params_to_extract = {
-                    'TMax': ('Simulation Duration', 's'),
-                    'DT': ('Time Step', 's'),
-                    'CompAero': ('Aerodynamics', ''),
-                    'CompHydro': ('Hydrodynamics', ''),
-                    'CompMooring': ('Mooring', ''),
-                    'CompElast': ('Elasticity', ''),
-                }
-                
-                rep.append(f"  FST File: {fst_path.name}")
-                
-                for param, (desc, unit) in params_to_extract.items():
-                    match = re.search(rf'^\s*([^\s]+)\s+{param}\b', fst_content, re.MULTILINE | re.IGNORECASE)
-                    if match:
-                        value = match.group(1).strip('"').strip("'")
-                        unit_str = f" {unit}" if unit else ""
-                        rep.append(f"  {desc:<25}: {value}{unit_str}")
-                
-                rep.append(f"  Analysis Start Time      : {analysis_start_time:.2f} s")
-                rep.append(f"  Analysis Duration        : {total['Time'].max() - analysis_start_time:.2f} s" if not total.empty else "  Analysis Duration        : N/A")
-                rep.append("")
-        except Exception as e:
-            self.logger.warning(f"Could not extract simulation parameters: {e}")
-            rep.append(f"  Analysis Start Time: {analysis_start_time:.2f} s")
-            rep.append("")
-        
-        # --- 3B. System Geometry ---
-        rep.append("SYSTEM GEOMETRY:")
-        rep.append("-" * 80)
-        rep.append(f"  Tower:")
-        rep.append(f"    Height (TowerHt)         : {geo.get('TowerHt', 0):.3f} m")
-        rep.append(f"    Base Height (TowerBsHt)  : {geo.get('TowerBsHt', 0):.3f} m")
-        rep.append(f"    Tower Length             : {geo.get('TowerHt', 0) - geo.get('TowerBsHt', 0):.3f} m")
-        rep.append(f"  Nacelle:")
-        rep.append(f"    Overhang                 : {geo.get('OverHang', 0):.3f} m")
-        rep.append(f"    Shaft Tilt               : {geo.get('ShftTilt', 0):.3f} deg")
-        rep.append(f"    Tower-to-Shaft Height    : {geo.get('Twr2Shft', 0):.3f} m")
-        rep.append(f"  Rotor:")
-        rep.append(f"    Tip Radius               : {geo.get('TipRad', 0):.3f} m")
-        rep.append(f"    Hub Radius               : {geo.get('HubRad', 0):.3f} m")
-        rep.append(f"    Rotor Diameter           : {2 * geo.get('TipRad', 0):.3f} m")
-        rep.append(f"  Reference Points:")
-        rep.append(f"    Yaw Bearing (Z)          : {geo['YawBearing'][2]:.3f} m")
-        rep.append(f"    Tower Base (Z)           : {geo['TowerBase'][2]:.3f} m")
-        rep.append(f"    Platform Ref Point (PRP) : [0.000, 0.000, 0.000] m")
-        rep.append("")
-        
-        # --- 3C. Mass Properties ---
-        rep.append("MASS PROPERTIES:")
-        rep.append("-" * 80)
-        rep.append(f"  Total Mass: {m:.6e} kg ({m/1000:.2f} metric tons)")
-        rep.append(f"  Center of Mass (CoM) [inertial frame]:")
-        rep.append(f"    X (surge) : {r_com[0]:>10.3f} m")
-        rep.append(f"    Y (sway)  : {r_com[1]:>10.3f} m")
-        rep.append(f"    Z (heave) : {r_com[2]:>10.3f} m")
-        rep.append(f"  CoM Height above PRP: {r_com[2]:.3f} m")
-        rep.append("")
-        rep.append("  Inertia Tensor (about CoM, inertial axes) [kg·m²]:")
-        for i, row_label in enumerate(['    Ixx, Ixy, Ixz:', '    Iyx, Iyy, Iyz:', '    Izx, Izy, Izz:']):
-            rep.append(f"{row_label}  {I[i,0]:>12.2e}  {I[i,1]:>12.2e}  {I[i,2]:>12.2e}")
-        rep.append("")
-        
-        # --- 3D. Mooring System Configuration ---
-        rep.append("MOORING SYSTEM CONFIGURATION:")
-        rep.append("-" * 80)
-        rep.append(f"  Number of Lines: {len(fairleads)}")
-        rep.append("")
-        
-        # Try to extract anchor positions from MoorDyn file
-        anchors_info = {}
-        try:
-            # Find MoorDyn file from FST references
-            refs = _find_fst_refs(args.fst, self.logger)
-            md_path = refs.get('MooringFile')
-            
-            if md_path and Path(md_path).exists():
-                md_lines = _read_lines(md_path, self.logger)
-                
-                # Parse POINTS section for anchor locations
-                in_points = False
-                for line in md_lines:
-                    line_upper = line.strip().upper()
-                    
-                    if '---' in line_upper and 'POINTS' in line_upper:
-                        in_points = True
-                        continue
-                    elif '---' in line_upper and in_points:
-                        break
-                    
-                    if in_points:
-                        parts = line.strip().split()
-                        if len(parts) >= 5 and parts[0].isdigit():
-                            point_id = int(parts[0])
-                            attach_type = parts[1].upper()
-                            if attach_type == 'FIXED':  # This is an anchor
-                                x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
-                                anchors_info[point_id] = np.array([x, y, z])
-        except Exception as e:
-            self.logger.warning(f"Could not parse anchor positions: {e}")
-        
-        for k in sorted(fairleads.keys()):
-            fairlead_pos = fairleads[k]
-            rep.append(f"  Line {k}:")
-            rep.append(f"    Fairlead Position (platform local):")
-            rep.append(f"      X: {fairlead_pos[0]:>8.3f} m")
-            rep.append(f"      Y: {fairlead_pos[1]:>8.3f} m")
-            rep.append(f"      Z: {fairlead_pos[2]:>8.3f} m")
-            
-            # Add anchor info if available
-            # Assuming anchor point ID = fairlead point ID - 3 (typical OC4 convention)
-            anchor_id = k  # This might need adjustment based on your MoorDyn setup
-            for aid, anchor_pos in anchors_info.items():
-                # Try to match by checking if this anchor is associated with line k
-                # This is a heuristic - you may need to parse LINES section for exact mapping
-                rep.append(f"    Anchor Position (seabed, global):")
-                rep.append(f"      X: {anchor_pos[0]:>8.3f} m")
-                rep.append(f"      Y: {anchor_pos[1]:>8.3f} m")
-                rep.append(f"      Z: {anchor_pos[2]:>8.3f} m")
-                
-                # Calculate horizontal distance and depth
-                horiz_dist = np.sqrt(anchor_pos[0]**2 + anchor_pos[1]**2)
-                depth = abs(anchor_pos[2] - fairlead_pos[2])
-                rep.append(f"    Line Geometry:")
-                rep.append(f"      Horizontal Distance: {horiz_dist:>8.1f} m")
-                rep.append(f"      Vertical Drop      : {depth:>8.1f} m")
-                break  # Only show first matching anchor
-            
-            rep.append(f"    Force Calculation Method: {force_methods.get(k, 'unknown')}")
-            rep.append("")
-        
-        # --- 3E. Mooring Force Calculation Methods ---
-        rep.append("MOORING FORCE CALCULATION METHODS:")
-        rep.append("-" * 80)
-        for k, method in sorted(force_methods.items()):
-            method_desc = {
-                'moordyn_main': 'MoorDyn force components (main output) - HIGH FIDELITY',
-                'moordyn_file': 'MoorDyn force components (separate file) - HIGH FIDELITY',
-                'geometric': 'Geometric approximation (straight-line) - REDUCED ACCURACY'
-            }[method]
-            rep.append(f"  Line {k}: {method_desc}")
-        
-        rep.append("")
-        
-        # --- 3F. Mooring Statistics ---
-        rep.extend(mooring_stats_lines)
-        rep.append("")
-        
-        # --- 3G. Load Extrema ---
-        rep.append("LOAD EXTREMA SUMMARY:")
-        rep.append("=" * 80)
-        rep.append(f"Analysis Period: t >= {analysis_start_time:.2f} s")
-        rep.append("")
-        rep.extend(extrema_lines)
-        rep.append("")
-        
-        # --- 3H. Analysis Notes ---
-        rep.append("ANALYSIS NOTES:")
-        rep.append("-" * 80)
-        rep.append("  • All forces and moments are reported in the inertial (global) reference frame")
-        rep.append("  • PRP = Platform Reference Point (typically at [0, 0, 0])")
-        rep.append("  • CoM = Center of Mass (calculated from structural mass distribution)")
-        rep.append("  • d'Alembert method includes inertial forces/moments from platform acceleration")
-        rep.append("  • High-fidelity mooring forces use direct MoorDyn output (includes catenary effects)")
-        rep.append("  • Geometric approximation assumes straight-line mooring (reduced accuracy ~5-10%)")
-        rep.append("")
-        
-        # --- Write Report to File ---
-        report_path = os.path.join(args.outdir, 'staticized_report.txt')
-        with open(report_path, 'w') as f:
-            f.write("\n".join(rep))
-        
-        self.logger.info(f"Wrote comprehensive report: {Path(report_path).name}")
+        rep = [f"Staticized snapshot report (d'Alembert) for {self.case_name}", "="*40, ""]
+        rep.append(f"Mass properties: m={m:.6e} kg, CoM=({r_com[0]:.3f}, {r_com[1]:.3f}, {r_com[2]:.3f}) m")
+        rep.append("Inertia tensor (CoM, inertial axes):\n" + np.array2string(I, prefix='    '))
+        rep.append(f"\nLoad extrema summary (t >= {analysis_start_time:.2f} s):\n" + "\n".join(extrema_lines))
+        report_path=os.path.join(args.outdir,'staticized_report.txt')
+        with open(report_path,'w') as f: f.write("\n".join(rep))
+        self.logger.info(f"Wrote report: {Path(report_path).name}")
 
     def _parse_glue_text(self, path):
         if path is None: return None
@@ -1322,129 +554,34 @@ class DalembertRunner:
         return pd.DataFrame(out)
     
     def _parse_elastodyn_geometry(self, ed_path):
-        """Parse ElastoDyn file to extract key geometric parameters."""
-        lines = _read_lines(ed_path, self.logger)
-        
+        lines=_read_lines(ed_path, self.logger)
         def fget(key):
             for ln in lines:
-                if key in ln and not ln.strip().startswith(('!', '#')):
-                    try:
-                        # Split and get first value, handle quoted strings
-                        value_str = ln.strip().split()[0].strip('"').strip("'")
-                        return float(value_str)
-                    except (ValueError, IndexError):
-                        pass
+                if key in ln:
+                    try: return float(ln.strip().split()[0])
+                    except: pass
             return None
-        
-        # Extract tower file path to get more geometry info
-        tower_ht = fget('TowerHt')
-        tower_bs_ht = fget('TowerBsHt')
-        
-        # If not found, try alternative patterns
-        if tower_ht is None:
-            for ln in lines:
-                if 'TowerHt' in ln or 'TwrHeight' in ln:
-                    match = re.search(r'([\d.eE+-]+)', ln)
-                    if match:
-                        tower_ht = float(match.group(1))
-                        break
-        
-        if tower_bs_ht is None:
-            tower_bs_ht = 0.0  # Default if not found
-        
-        if tower_ht is None:
-            self.logger.warning("Could not extract TowerHt from ElastoDyn file. Using default 90m.")
-            tower_ht = 90.0
-        
-        yaw_bearing_z = tower_ht
-        tower_base_z = tower_bs_ht
-        
-        geo_data = {
-            'TowerHt': tower_ht,
-            'TowerBsHt': tower_bs_ht,
-            'YawBearing': np.array([0.0, 0.0, yaw_bearing_z]),
-            'TowerBase': np.array([0.0, 0.0, tower_base_z]),
-            'OverHang': fget('OverHang') or 0.0,
-            'ShftTilt': fget('ShftTilt') or 0.0,
-            'Twr2Shft': fget('Twr2Shft') or 0.0,
-            'TipRad': fget('TipRad') or 0.0,
-            'HubRad': fget('HubRad') or 0.0,
-        }
-        
-        self.logger.debug(f"Extracted geometry: TowerHt={tower_ht:.1f}m, TowerBsHt={tower_bs_ht:.1f}m")
-        
-        return geo_data
+        return {'YawBearing': np.array([0.,0.,fget('TowerHt') or 0.0]), 'TowerBase': np.array([0.,0.,fget('TowerBsHt') or 0.0])}
 
-    def _parse_moordyn_points(self, md_path: str) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
-        """
-        Parses a MoorDyn input file to extract fairlead and anchor locations.
-
-        This function reads the POINTS and LINES sections to build a map of the
-        mooring system geometry. It correctly associates each line number with its
-        corresponding vessel fairlead (local coordinates) and fixed anchor
-        (global coordinates).
-
-        Args:
-            md_path: The file path to the MoorDyn input file.
-
-        Returns:
-            A tuple containing two dictionaries:
-            - fairleads: A dict mapping line ID (int) to fairlead position (np.ndarray).
-            - anchors: A dict mapping line ID (int) to anchor position (np.ndarray).
-        """
-        self.logger.info(f"Parsing MoorDyn fairlead and anchor points: {md_path}")
-        lines = _read_lines(md_path, self.logger)
-        
-        points_data = []
-        lines_data = []
-        in_points_section = False
-        in_lines_section = False
-
+    def _parse_moordyn_points(self, md_path):
+        self.logger.info(f"Parsing MoorDyn fairlead points: {md_path}")
+        lines=_read_lines(md_path, self.logger)
+        pts=[]; in_points=False; in_lines=False; line_defs=[]
         for s in lines:
-            s_upper = s.strip().upper()
-            if s_upper.startswith('---'):
-                in_points_section = 'POINTS' in s_upper
-                in_lines_section = 'LINES' in s_upper
-                continue
-
-            parts = s.strip().split()
-            if not parts or not parts[0].isdigit():
-                continue
-
-            if in_points_section and len(parts) >= 5:
-                # Store Point ID, Attachment Type, X, Y, Z
-                points_data.append((int(parts[0]), parts[1].upper(), float(parts[2]), float(parts[3]), float(parts[4])))
-            elif in_lines_section and len(parts) >= 4:
-                # Store Line ID, AttachA ID, AttachB ID
-                lines_data.append((int(parts[0]), int(parts[2]), int(parts[3])))
-
-        # Create a map of all points by their ID
-        all_points_map = {pid: {'att': att, 'pos': np.array([x, y, z])} for pid, att, x, y, z in points_data}
-
-        fairleads = {}
-        anchors = {}
-
-        # Iterate through line definitions to connect anchors and fairleads
-        for line_id, pida, pidb in lines_data:
-            point_a = all_points_map.get(pida)
-            point_b = all_points_map.get(pidb)
-
-            if not point_a or not point_b:
-                self.logger.warning(f"Skipping Line {line_id} due to missing point definition for ID {pida} or {pidb}.")
-                continue
-
-            # Assign points based on their attachment type
-            if point_a['att'] == 'VESSEL' and point_b['att'] == 'FIXED':
-                fairleads[line_id] = point_a['pos']
-                anchors[line_id] = point_b['pos']
-            elif point_b['att'] == 'VESSEL' and point_a['att'] == 'FIXED':
-                fairleads[line_id] = point_b['pos']
-                anchors[line_id] = point_a['pos']
-            else:
-                self.logger.warning(f"Line {line_id} does not connect a 'VESSEL' point to a 'FIXED' point. Skipping.")
+            s=s.strip().upper()
+            if s.startswith('---'):
+                in_points = 'POINTS' in s
+                in_lines = 'LINES' in s
+            elif in_points:
+                tok=s.split()
+                if len(tok)>=5 and tok[0].isdigit(): pts.append((int(tok[0]),tok[1],float(tok[2]),float(tok[3]),float(tok[4])))
+            elif in_lines:
+                tok=s.split()
+                if len(tok)>=7 and tok[0].isdigit(): line_defs.append((int(tok[0]),int(tok[2]),int(tok[3])))
         
-        self.logger.info(f"Found {len(fairleads)} fairleads and {len(anchors)} anchors.")
-        return fairleads, anchors
+        vessel={pid:(x,y,z) for pid,att,x,y,z in pts if att=='VESSEL'}
+        fair_pids = sorted([a if a in vessel else b for _,a,b in line_defs if a in vessel or b in vessel])
+        return [(i, np.array(vessel[pid])) for i, pid in enumerate(fair_pids, 1)]
 
     def _vnorm(self, v): return float(np.linalg.norm(np.asarray(v,float)))
     def _rotmat_from_rpy_deg(self, r,p,y):
@@ -1544,6 +681,7 @@ class DalembertRunner:
                     Ic_local = np.diag([0, (1/12)*m_seg*L**2, (1/12)*m_seg*L**2])
                     Ms.append(m_seg); Rs.append(r_global); Is.append(R_blade @ Ic_local @ R_blade.T)
             return Ms, Rs, Is
+
 # #############################################################################
 # --- END: NEW d'Alembert Implementation ---
 # #############################################################################
@@ -1556,19 +694,6 @@ class DalembertRunner:
 class OpenFASTTestCaseGUI:
     def __init__(self, root):
         self.root = root; self.root.title("OpenFAST Test Case Workflow Manager"); self.root.geometry("1200x850")
-        try:
-            # Method 1: Using .ico file (recommended for Windows)
-            icon_path = Path(__file__).parent / "logo.ico"
-            if icon_path.exists():
-                self.root.iconbitmap(str(icon_path))
-            else:
-                # Method 2: Using .png file (works on all platforms)
-                icon_path = Path(__file__).parent / "logo.png"
-                if icon_path.exists():
-                    icon_img = tk.PhotoImage(file=str(icon_path))
-                    self.root.iconphoto(True, icon_img)
-        except Exception as e:
-            print(f"Could not load custom icon: {e}")
         style = ttk.Style(); style.theme_use('clam'); style.configure("Accent.TButton", foreground="white", background="#0078D7"); style.map("Accent.TButton", background=[('active', '#005A9E')])
         self.notebook = ttk.Notebook(root); self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
         self.setup_tab, self.run_tab, self.post_proc_tab = ttk.Frame(self.notebook), ttk.Frame(self.notebook), ttk.Frame(self.notebook)
@@ -1582,55 +707,29 @@ class OpenFASTTestCaseGUI:
         self.run_button, self.run_job_queue, self.run_progress_lock, self.run_completed_cases, self.run_total_cases, self.run_cases = None, queue.Queue(), threading.Lock(), 0, 0, {}
         self.post_proc_button, self.post_proc_job_queue, self.post_proc_progress_lock, self.post_proc_completed_cases, self.post_proc_total_cases, self.post_proc_cases = None, queue.Queue(), threading.Lock(), 0, 0, {}
         self.run_convert_csv, self.run_dalembert, self.run_plotting = tk.BooleanVar(value=True), tk.BooleanVar(value=True), tk.BooleanVar(value=True)
-        
-        # --- NEW: Variables for Frequency Analysis ---
-        self.run_frequency_analysis = tk.BooleanVar(value=False)
-        self.frequency_analysis_column = tk.StringVar(value="PtfmHeave")
-        
+        self.geom_vary_height_enabled = tk.BooleanVar(value=False)
+        self.geom_height_start_scale = tk.DoubleVar(value=0.9)
+        self.geom_height_end_scale = tk.DoubleVar(value=1.1)
+        self.geom_height_steps = tk.IntVar(value=3)
+
+        self.geom_vary_diam_enabled = tk.BooleanVar(value=False)
+        self.geom_diam_start_scale = tk.DoubleVar(value=0.9)
+        self.geom_diam_end_scale = tk.DoubleVar(value=1.1)
+        self.geom_diam_steps = tk.IntVar(value=3)
         # FIX: Add a dedicated lock for plotting to prevent multithreading issues
         self.plotting_lock = threading.Lock()
 
         self.create_tutorial_tab();self.create_setup_tab(); self.create_run_tab(); self.create_post_proc_tab(); self.process_queue()
         
     def create_setup_tab(self):
-        # Create main frame with grid layout for better control
-        main_frame = ttk.Frame(self.setup_tab)
-        main_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Create canvas with scrollbar
-        canvas = tk.Canvas(main_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>", 
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=canvas.winfo_width())
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Bind canvas width changes to update window width
-        def on_canvas_configure(event):
-            canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width)
-        
-        canvas.bind('<Configure>', on_canvas_configure)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Add all sections
-        self.create_file_selection_section(scrollable_frame)
-        self.create_test_config_section(scrollable_frame)
-        self.create_parameter_discovery_section(scrollable_frame)
-        self.create_parameter_section(scrollable_frame)
-        self.create_action_section(scrollable_frame)
-        
-        # Log section at the bottom with fixed height
-        log_frame = ttk.LabelFrame(self.setup_tab, text="Output Log", padding="10")
-        log_frame.pack(fill='x', side='bottom', pady=5, padx=5)
-        self.setup_log = scrolledtext.ScrolledText(log_frame, height=6, wrap=tk.WORD, bg="#f0f0f0", relief="sunken", borderwidth=1)
-        self.setup_log.pack(fill='both', expand=False)
+        canvas = tk.Canvas(self.setup_tab); scrollbar = ttk.Scrollbar(self.setup_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas); scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        self.create_file_selection_section(scrollable_frame); self.create_test_config_section(scrollable_frame)
+        self.create_geometry_section(scrollable_frame)
+        self.create_parameter_discovery_section(scrollable_frame); self.create_parameter_section(scrollable_frame)
+        self.create_action_section(scrollable_frame); self.create_log_section(scrollable_frame, "setup_log")
         
     def create_run_tab(self):
         main_frame = ttk.Frame(self.run_tab, padding="10"); main_frame.pack(fill='both', expand=True)
@@ -1668,23 +767,10 @@ class OpenFASTTestCaseGUI:
         ttk.Entry(config_frame, textvariable=self.output_dir, width=50).grid(row=0, column=1, sticky='ew', padx=5, pady=2)
         ttk.Button(config_frame, text="Browse", command=self.browse_output_dir).grid(row=0, column=2, padx=5, pady=2)
         config_frame.columnconfigure(1, weight=1)
-        post_proc_frame = ttk.LabelFrame(top_frame, text="Tasks to Run", padding="10"); post_proc_frame.pack(fill='x', side='left', padx=5)
+        post_proc_frame = ttk.LabelFrame(top_frame, text="Tasks to Run", padding="10"); post_proc_frame.pack(fill='x', side='left')
         ttk.Checkbutton(post_proc_frame, text="Convert .out to .csv", variable=self.run_convert_csv).pack(anchor='w')
         ttk.Checkbutton(post_proc_frame, text="Run d'Alembert Analysis", variable=self.run_dalembert).pack(anchor='w')
         ttk.Checkbutton(post_proc_frame, text="Generate Plots", variable=self.run_plotting).pack(anchor='w')
-        
-        # --- NEW: Frequency Analysis UI ---
-        freq_frame = ttk.Frame(post_proc_frame)
-        freq_frame.pack(anchor='w', fill='x', pady=(5,0))
-        self.freq_check = ttk.Checkbutton(freq_frame, text="Run Frequency Analysis on column:", variable=self.run_frequency_analysis)
-        self.freq_check.pack(side='left')
-        self.freq_entry = ttk.Entry(freq_frame, textvariable=self.frequency_analysis_column, width=18)
-        self.freq_entry.pack(side='left', padx=5)
-        if not SCIPY_AVAILABLE:
-            self.freq_check.config(state='disabled')
-            self.freq_entry.config(state='disabled')
-            ttk.Label(post_proc_frame, text="(Frequency Analysis requires 'scipy')", foreground="gray", font=('TkDefaultFont', 8)).pack(anchor='w')
-        
         case_frame = ttk.LabelFrame(main_frame, text="Cases to Process", padding="10"); case_frame.pack(fill='both', expand=True, pady=5)
         btn_frame = ttk.Frame(case_frame); btn_frame.pack(fill='x', pady=5)
         ttk.Button(btn_frame, text="Load Results", command=self.load_post_proc_cases).pack(side='left', padx=5)
@@ -1715,79 +801,72 @@ class OpenFASTTestCaseGUI:
         frame.columnconfigure(1, weight=1)
         
     def create_test_config_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="Test Configuration", padding="10")
-        frame.pack(fill='x', pady=5, padx=5)
-        
-        # Row 0: Number of cases
+        frame = ttk.LabelFrame(parent, text="Test Configuration", padding="10"); frame.pack(fill='x', pady=5, padx=5)
         ttk.Label(frame, text="Number of Test Cases:").grid(row=0, column=0, sticky=tk.W, padx=5)
         self.num_cases_spinbox = ttk.Spinbox(frame, from_=2, to=10000, textvariable=self.num_cases, width=10)
         self.num_cases_spinbox.grid(row=0, column=1, sticky=tk.W, padx=5)
-        
-        # Row 1: Distribution type for STANDARD PARAMETERS
-        ttk.Label(frame, text="Parameter Distribution:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(frame, text="Distribution Type:").grid(row=0, column=2, sticky=tk.W, padx=20)
         self.distribution_var = tk.StringVar(value="grid_search")
-        dist_combo = ttk.Combobox(
-            frame, 
-            textvariable=self.distribution_var, 
-            values=["grid_search", "csv_columnwise", "latin_hypercube", "uniform", "normal"], 
-            width=20,
-            state="readonly"
-        )
-        dist_combo.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        dist_combo.bind("<<ComboboxSelected>>", self.on_distribution_change)
-        
-        # Add help text
-        self.dist_help_label = ttk.Label(
-            frame, 
-            text="This setting controls how standard parameters are varied.",
-            foreground="gray",
-            font=('TkDefaultFont', 9, 'italic')
-        )
-        self.dist_help_label.grid(row=1, column=2, columnspan=2, sticky='w', padx=10)
+        dist_combo = ttk.Combobox(frame, textvariable=self.distribution_var, values=["grid_search", "csv_columnwise", "latin_hypercube", "uniform", "normal"], width=15)
+        dist_combo.grid(row=0, column=3, sticky=tk.W, padx=5); dist_combo.bind("<<ComboboxSelected>>", self.on_distribution_change)
+    # --- NEW: Method to create the Geometry UI ---
+    def create_geometry_section(self, parent):
+        """Creates the UI section for configuring geometric variations."""
+        geom_frame = ttk.LabelFrame(parent, text="Geometric Variations (Automatic)", padding="10")
+        geom_frame.pack(fill='x', pady=5, padx=5)
 
+        if not GEOMETRY_ENGINE_AVAILABLE:
+            ttk.Label(geom_frame, text="Engine not found. Please ensure 'advanced_geometry_engine.py' is in the same directory.", foreground="red").pack()
+            return
+
+        # --- Height Variation Sub-section ---
+        height_frame = ttk.LabelFrame(geom_frame, text="Height Scaling", padding="5")
+        height_frame.pack(fill='x', expand=True, pady=5)
+
+        enable_height_check = ttk.Checkbutton(height_frame, text="Enable Height Variation", variable=self.geom_vary_height_enabled, command=self.update_total_cases)
+        enable_height_check.grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 5))
+
+        ttk.Label(height_frame, text="Start Scale:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        ttk.Entry(height_frame, textvariable=self.geom_height_start_scale, width=8).grid(row=1, column=1, sticky='w', padx=5)
+        ttk.Label(height_frame, text="End Scale:").grid(row=1, column=2, sticky='w', padx=5)
+        ttk.Entry(height_frame, textvariable=self.geom_height_end_scale, width=8).grid(row=1, column=3, sticky='w', padx=5)
+        ttk.Label(height_frame, text="Steps:").grid(row=1, column=4, sticky='w', padx=5)
+        ttk.Spinbox(height_frame, from_=1, to=100, textvariable=self.geom_height_steps, width=5).grid(row=1, column=5, sticky='w', padx=5)
+
+        # --- Diameter Variation Sub-section ---
+        diam_frame = ttk.LabelFrame(geom_frame, text="Diameter Scaling", padding="5")
+        diam_frame.pack(fill='x', expand=True, pady=5)
+
+        enable_diam_check = ttk.Checkbutton(diam_frame, text="Enable Diameter Variation", variable=self.geom_vary_diam_enabled, command=self.update_total_cases)
+        enable_diam_check.grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 5))
+
+        ttk.Label(diam_frame, text="Start Scale:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        ttk.Entry(diam_frame, textvariable=self.geom_diam_start_scale, width=8).grid(row=1, column=1, sticky='w', padx=5)
+        ttk.Label(diam_frame, text="End Scale:").grid(row=1, column=2, sticky='w', padx=5)
+        ttk.Entry(diam_frame, textvariable=self.geom_diam_end_scale, width=8).grid(row=1, column=3, sticky='w', padx=5)
+        ttk.Label(diam_frame, text="Steps:").grid(row=1, column=4, sticky='w', padx=5)
+        ttk.Spinbox(diam_frame, from_=1, to=100, textvariable=self.geom_diam_steps, width=5).grid(row=1, column=5, sticky='w', padx=5)
+
+        # Trace changes to update case count automatically
+        self.geom_vary_height_enabled.trace_add("write", self.update_total_cases)
+        self.geom_height_steps.trace_add("write", self.update_total_cases)
+        self.geom_vary_diam_enabled.trace_add("write", self.update_total_cases)
+        self.geom_diam_steps.trace_add("write", self.update_total_cases)
+    # --- END NEW ---
     def create_parameter_discovery_section(self, parent):
         frame = ttk.LabelFrame(parent, text="Parameter Discovery", padding="10"); frame.pack(fill='x', pady=5, padx=5)
         ttk.Button(frame, text="Discover Parameters", command=self.discover_parameters, style="Accent.TButton").pack(side='left', padx=5)
         self.discovery_status = ttk.Label(frame, text="Select a .fst file and click 'Discover Parameters'"); self.discovery_status.pack(side='left', padx=20)
         
     def create_parameter_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="Parameter Configuration", padding="10")
-        frame.pack(fill='x', pady=5, padx=5)
-        
-        control_frame = ttk.Frame(frame)
-        control_frame.pack(fill='x', pady=5)
+        frame = ttk.LabelFrame(parent, text="Parameter Configuration", padding="10"); frame.pack(fill='both', expand=True, pady=5, padx=5)
+        control_frame = ttk.Frame(frame); control_frame.pack(fill='x', pady=5)
         ttk.Button(control_frame, text="Add from Discovery", command=self.show_parameter_selector).pack(side='left', padx=5)
         ttk.Button(control_frame, text="Clear All", command=self.clear_parameters).pack(side='left', padx=5)
-        
-        # Create container frame for canvas and scrollbar
-        scroll_container = ttk.Frame(frame, height=250)  # Fixed height container
-        scroll_container.pack(fill='x', pady=5)
-        scroll_container.pack_propagate(False)  # Prevent container from shrinking
-        
-        # Create scrollable area
-        canvas = tk.Canvas(scroll_container, bg='white', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
-        self.param_list_frame = ttk.Frame(canvas)
-        
-        # Configure scrolling
-        self.param_list_frame.bind(
-            "<Configure>", 
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        # Create window in canvas
-        canvas.create_window((0, 0), window=self.param_list_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Enable mousewheel scrolling
-        def on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        
-        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        canvas = tk.Canvas(frame, height=250); scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        self.param_list_frame = ttk.Frame(canvas); self.param_list_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.param_list_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         
     def create_action_section(self, parent):
         frame = ttk.Frame(parent, padding="5"); frame.pack(fill='x', pady=10)
@@ -1803,8 +882,8 @@ class OpenFASTTestCaseGUI:
         setattr(self, log_attr_name, log_widget)
     def _copy_and_rewrite_paths(self, source_path: Path, dest_path: Path):
         """
-        Copies a file and rewrites any internal file paths to be relative to the new case directory.
-        Handles paths like "../5MW_Baseline/file.dat" and converts them to just "file.dat"
+        Copies a file and intelligently rewrites any internal file paths to be
+        relative to the new case directory. This is the definitive fix for the path issue.
         """
         if source_path.suffix.lower() not in ['.fst', '.dat', '.twr', '.bld', '.ipt', '.txt', '.in']:
             shutil.copy2(source_path, dest_path)
@@ -1814,64 +893,29 @@ class OpenFASTTestCaseGUI:
             content = source_path.read_text(encoding='utf-8', errors='ignore')
             original_content = content
             
-            # Enhanced pattern that captures:
-            # - Quoted strings (single or double quotes)
-            # - Optional ../ or ..\ prefixes (repeating)
-            # - Optional drive letters (C:)
-            # - Path separators (/ or \)
-            # - File/directory names with common characters
-            # - Optional file extensions
-            pattern = re.compile(
-                r'(["\'])'  # Opening quote (group 1)
-                r'('  # Start of path content (group 2)
-                r'(?:\.\./|\.\.\\)*'  # Optional ../ or ..\ prefix(es)
-                r'(?:[a-zA-Z]:)?'  # Optional drive letter
-                r'(?:[a-zA-Z0-9_.\-\s]+[/])+'  # One or more path components with separators
-                r'[a-zA-Z0-9_.\-\s]+'  # Final filename
-                r'(?:\.\w{2,4})?'  # Optional extension
-                r')'  # End of path content
-                r'\1',  # Closing quote matching opening (group 1)
-                re.IGNORECASE
-            )
+            # --- DEFINITIVE FIX: Make the file extension optional in the regex by adding a '?' ---
+            # This allows it to match both full filenames and root names like "marin_semi".
+            pattern = re.compile(r'(["\'])((?:[a-zA-Z]:)?[a-zA-Z0-9_.\-\s\\/]+(\.\w{2,4})?)\1')
 
-            modifications = []
-            
             for match in pattern.finditer(content):
                 full_match = match.group(0)
                 path_inside = match.group(2)
                 
-                # Skip non-file-path strings
-                if path_inside.lower() in ['default', 'unused', 'none', 'true', 'false']:
+                if "/" not in path_inside and "\\" not in path_inside:
                     continue
-                
-                # Extract just the filename
-                path_obj = Path(path_inside)
-                new_basename = path_obj.name
-                
-                # Skip if basename is empty (shouldn't happen, but safety check)
-                if not new_basename:
-                    continue
-                
-                # Build the replacement string
+
+                new_basename = Path(path_inside).name
                 quote_char = match.group(1)
                 new_path_str = f"{quote_char}{new_basename}{quote_char}"
                 
-                # Replace this occurrence
-                content = content.replace(full_match, new_path_str, 1)
-                modifications.append((path_inside, new_basename))
+                content = content.replace(full_match, new_path_str)
 
-            # Write the modified content
             dest_path.write_text(content, encoding='utf-8')
 
-            if modifications:
-                self.log(f"    Rewrote {len(modifications)} path(s) in {dest_path.name}")
-                for old_path, new_path in modifications[:3]:  # Show first 3 for brevity
-                    self.log(f"      '{old_path}' -> '{new_path}'")
-                if len(modifications) > 3:
-                    self.log(f"      ... and {len(modifications) - 3} more")
-            
+            if content != original_content:
+                self.log(f"    Rewrote internal paths in {dest_path.name}")
         except Exception as e:
-            self.log(f"    Warning: Error rewriting {source_path.name}: {e}. Copying without modification.")
+            self.log(f"    Warning: Could not read/rewrite {source_path.name}. Copying directly. Error: {e}")
             shutil.copy2(source_path, dest_path)
     def resolve_file_path(self, base_dir, filename):
         if not filename or filename.lower() in ['unused', 'none', '']: return None
@@ -1883,12 +927,10 @@ class OpenFASTTestCaseGUI:
             except: continue
         self.log(f"Warning: Could not find file: {filename}"); return None
         
-    # --- DEFINITIVE FIX: Rewritten discovery function to handle root names ---
     def _discover_and_parse_files_recursively(self, file_path: Path, file_info_by_path: Dict[Path, Dict], processed_paths: set):
         """
         Recursively scans files to find all dependencies, adding them to the
-        file_info_by_path dictionary. This version correctly handles OpenFAST's
-        root name convention for file families like WAMIT data.
+        file_info_by_path dictionary and storing all original path strings.
         """
         if not file_path or not file_path.exists() or file_path in processed_paths:
             return
@@ -1897,65 +939,44 @@ class OpenFASTTestCaseGUI:
         processed_paths.add(file_path)
 
         try:
-            content = file_path.read_text(encoding='utf-8', errors='ignore')
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
             
+            # Get or create the entry for this unique file path
             if file_path not in file_info_by_path:
                 file_info_by_path[file_path] = {
-                    'key': file_path.name,
+                    'key': file_path.name, # Default key is the filename
                     'original_strings': set(),
                     'params': {}
                 }
             
+            # 1. Extract parameters from this file
             params = self.extract_parameters_from_file(content.splitlines())
             if params:
                 file_info_by_path[file_path]['params'] = params
 
-            # Use the corrected regex that makes the file extension optional
-            pattern = re.compile(r'(["\'])((?:[a-zA-Z]:)?[a-zA-Z0-9_.\-\s\\/]+(\.\w{2,4})?)\1')
-            
+            # 2. Find all referenced files within this file's content
+            pattern = re.compile(r'["\']([a-zA-Z0-9_.\-\\/]+(\.\w{2,4}))["\']')
             for match in pattern.finditer(content):
-                full_match_str = match.group(0)
-                path_inside_quotes = match.group(2)
+                original_path_string = match.group(1)
                 
-                if not path_inside_quotes or path_inside_quotes.lower() in ['default', 'unused', 'none']:
+                if original_path_string.lower() in ['default', 'unused', 'none']:
                     continue
                 
-                # Resolve path relative to the current file's directory
-                resolved_path = (file_path.parent / path_inside_quotes).resolve()
+                resolved_path = self.resolve_file_path(file_path.parent, original_path_string)
                 
-                # Case 1: The path points directly to an existing file.
-                if resolved_path.is_file():
+                if resolved_path and resolved_path.exists():
+                    # Add the original string to the set for the resolved file
                     if resolved_path not in file_info_by_path:
-                        file_info_by_path[resolved_path] = {'key': resolved_path.name, 'original_strings': set(), 'params': {}}
-                    file_info_by_path[resolved_path]['original_strings'].add(path_inside_quotes)
+                         file_info_by_path[resolved_path] = {'key': resolved_path.name, 'original_strings': set(), 'params': {}}
+                    file_info_by_path[resolved_path]['original_strings'].add(original_path_string)
                     
+                    # Recurse if we haven't processed this file yet
                     if resolved_path not in processed_paths:
                         self._discover_and_parse_files_recursively(resolved_path, file_info_by_path, processed_paths)
 
-                # Case 2: The path does NOT point to a file, but might be a root name (e.g., "marin_semi").
-                else:
-                    parent_dir = resolved_path.parent
-                    root_name = resolved_path.name
-                    
-                    if parent_dir.is_dir():
-                        found_family = False
-                        # Find all files in the directory that start with this root name.
-                        for item in parent_dir.iterdir():
-                            if item.is_file() and item.name.startswith(root_name + '.'):
-                                found_family = True
-                                self.log(f"  [Discovery] Found root name family member: {item.name}")
-                                
-                                # Add the found file to the structure, but don't recurse into it.
-                                if item not in file_info_by_path:
-                                    file_info_by_path[item] = {'key': item.name, 'original_strings': set(), 'params': {}}
-                                # Associate the original root name string with ALL family members found
-                                file_info_by_path[item]['original_strings'].add(path_inside_quotes)
-
-                        if not found_family:
-                             self.log(f"  [Discovery] Warning: Could not resolve path or find root name family for '{path_inside_quotes}'")
-
         except Exception as e:
-            self.log(f"Could not process file {file_path.name}: {e}\n{traceback.format_exc()}")
+            self.log(f"Could not process file {file_path.name}: {e}")
         
     def discover_parameters(self):
         if not self.base_fst_path.get():
@@ -1999,156 +1020,42 @@ class OpenFASTTestCaseGUI:
             messagebox.showerror("Error", f"Failed to discover parameters: {str(e)}")
         
     def extract_parameters_from_file(self, lines: List[str]):
-        """
-        Extract parameters from OpenFAST input file lines.
-        Uses a more flexible regex pattern to handle various line formats.
-        """
         parameters = {}
-        
-        # More flexible pattern: value, then parameter name, then optional comment
-        # This handles lines like: "12.4  WaveHs  - comment" or "12.4  WaveHs  ! comment"
-        param_pattern = re.compile(r'^\s*([^\s!#]+)\s+([a-zA-Z_][a-zA-Z0-9_()]*)', re.IGNORECASE)
-        
+        param_pattern = re.compile(r'^\s*([^\s!#"]+)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[-!]')
         for i, line in enumerate(lines):
-            # Skip empty lines and full-line comments
             line_stripped = line.strip()
-            if not line_stripped or line_stripped.startswith(('!', '#')):
-                continue
+            if not line_stripped or line_stripped.startswith(('!', '#', '-', '=')): continue
             
-            # Skip section headers (lines with only dashes or equals)
-            if all(c in '-=_' for c in line_stripped.replace(' ', '')):
-                continue
-            
-            # Skip table/data section markers
-            if line_stripped.lower().startswith(('joint', 'member', 'node', 'station', 'point', 'line', 'connect')):
-                continue
-            
-            # Try to match the pattern
+            if line_stripped.lower().startswith(('joint', 'member', 'node', 'station')): continue
+
             match = param_pattern.match(line_stripped)
-            if not match:
-                continue
-            
-            value_str, param_name = match.groups()
-            
-            # Skip known non-parameter keywords
-            if param_name.lower() in ['true', 'false', 'default', 'unused', 'none', 'end', 'echo', 'description', 'input', 'output']:
-                continue
-            
-            # Skip if value looks like a filename
-            if any(ext in value_str.lower() for ext in ['.dat', '.txt', '.csv', '.twr', '.bld', '.ipt', '.in', '.out', '.fst']):
-                continue
-            
-            # Skip if parameter name looks like a filename
-            if any(ext in param_name.lower() for ext in ['.dat', '.txt', '.csv']):
-                continue
-            
-            # Try to parse the parameter value
-            try:
-                param_info = self.parse_parameter_value(value_str, line, param_name)
-                
+            if match:
+                value_str, param_name = match.groups()
+                if param_name.lower() in ['true', 'false', 'default', 'unused', 'none', 'end', 'echo'] or any(ext in value_str.lower() for ext in ['.dat', '.txt', '.csv', '.twr', '.bld', '.ipt', '.in']):
+                    continue
+                param_info = self.parse_parameter_value(value_str, line)
                 if param_info:
-                    # Extract description and unit
-                    description = ""
-                    unit = ""
-                    
-                    # Look for comment after the parameter name
-                    comment_match = re.search(r'[-!]\s*(.+)$', line)
-                    if comment_match:
-                        description = comment_match.group(1).strip()
-                        unit = self.extract_unit(line)
-                    
-                    parameters[param_name] = {
-                        'line_number': i,
-                        'original_value': param_info['value'],
-                        'type': param_info['type'],
-                        'description': description,
-                        'unit': unit
-                    }
-            except Exception as e:
-                # Log but don't fail - just skip this line
-                continue
-        
+                    parameters[param_name] = {'line_number': i, 'original_value': param_info['value'], 'type': param_info['type'], 'description': line.split('!', 1)[-1].split('-', 1)[-1].strip(), 'unit': self.extract_unit(line)}
         return parameters
-    def extract_unit(self, line: str) -> str:
-        """Extract units from parameter description line."""
-        # Look for content in parentheses that looks like units
-        matches = re.findall(r'\(([^)]+)\)', line)
         
-        for match in matches:
-            match_lower = match.lower()
-            # Skip if it looks like a description rather than units
-            if any(word in match_lower for word in ['flag', 'switch', 'quoted', 'string', 'option', 'see', 'e.g.', 'i.e.', 'or', 'and']):
-                continue
-            # If it looks like units (short, has common unit indicators)
-            if len(match) < 20 and any(unit in match_lower for unit in ['m', 's', 'kg', 'n', 'deg', 'rad', 'rpm', 'hz', 'w', 'pa', '%', 'a']):
-                return match
-        
-        return ''
-    def parse_parameter_value(self, value_str, description, param_name=""):
-        """
-        Parse a parameter value and determine its type.
-        
-        Args:
-            value_str: The string representation of the value
-            description: The full line containing the parameter
-            param_name: The already-extracted parameter name (optional)
-        """
+    def parse_parameter_value(self, value_str, description):
         value_str = value_str.strip().strip('"\'')
-        if value_str.upper() in ['DEFAULT']: 
-            return None
-        
+        if value_str.upper() in ['DEFAULT']: return None
         try:
             value = float(value_str)
-            
-            # If param_name wasn't provided, try to extract it from the description
-            if not param_name:
-                param_match = re.search(r'\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[-!]', description)
-                if param_match:
-                    param_name = param_match.group(1).lower()
-                else:
-                    param_name = ""
-            else:
-                param_name = param_name.lower()
-            
-            # Only classify as 'int' if it's clearly a discrete/countable parameter
-            integer_patterns = [
-                r'^num',           # NumBl, NumTwrNds, etc.
-                r'^n[a-z]',        # NWaveElev, NWaveKin, etc.
-                r'mode$',          # WaveMod, CurrMod, etc.
-                r'switch$',        # OutSwitch, etc.
-                r'method$',        # InterpMethod, etc.
-                r'model$',         # WaveStMod, etc.
-                r'flag$',          # SomeFlag, etc.
-                r'id$',            # JointID, MemberID, etc.
-                r'index',          # Any index parameter
-                r'order$',         # InterpOrder, etc.
-                r'^echo$',         # Echo parameter
-                r'tabdim',         # Table dimensions
-            ]
-            
-            description_keywords = ['switch', 'flag', 'option', 'code', 'method', 'model', 'mode']
-            
-            is_likely_integer = (
-                any(re.search(pattern, param_name, re.IGNORECASE) for pattern in integer_patterns) or
-                any(keyword in description.lower() for keyword in description_keywords)
-            )
-            
-            # Default to 'float' for all numeric values unless clearly an integer parameter
-            if is_likely_integer and value == int(value) and '.' not in value_str and 'e' not in value_str.lower():
-                return {'value': int(value), 'type': 'int'}
-            else: 
-                return {'value': value, 'type': 'float'}
-                
-        except ValueError: 
-            pass
-        
-        if value_str.lower() in ['true', 'false']: 
-            return {'value': value_str.lower() == 'true', 'type': 'bool'}
-        
-        if any(keyword in description.lower() for keyword in ['option', 'method', 'model', 'type', 'switch', 'code', 'name', 'file']): 
-            return {'value': value_str, 'type': 'option'}
-        
+            if value == int(value) and '.' not in value_str and 'e' not in value_str.lower(): return {'value': int(value), 'type': 'int'}
+            else: return {'value': value, 'type': 'float'}
+        except ValueError: pass
+        if value_str.lower() in ['true', 'false']: return {'value': value_str.lower() == 'true', 'type': 'bool'}
+        if any(keyword in description.lower() for keyword in ['option', 'method', 'model', 'type', 'switch', 'code', 'name', 'file']): return {'value': value_str, 'type': 'option'}
         return None
+        
+    def extract_unit(self, description):
+        match = re.search(r'\(([^)]+)\)', description)
+        if match:
+            unit = match.group(1)
+            if not any(word in unit.lower() for word in ['flag', 'switch', 'quoted', 'string', 'option']): return unit
+        return ''
         
     def show_parameter_selector(self):
         if not self.discovered_parameters: messagebox.showinfo("Info", "Run 'Discover Parameters' first."); return
@@ -2250,15 +1157,22 @@ class OpenFASTTestCaseGUI:
     def remove_parameter(self, entry_to_remove):
         entry_to_remove['frame'].destroy(); self.parameter_entries.remove(entry_to_remove); self.update_total_cases()
         
+    # --- REPLACED METHOD: Implements the combined geometry + standard parameter grid ---
     def generate_test_cases(self):
         # --- 1. Initial validation ---
+        is_geom_height = self.geom_vary_height_enabled.get()
+        is_geom_diam = self.geom_vary_diam_enabled.get()
+        is_geom_active = is_geom_height or is_geom_diam
+
         if not self.base_fst_path.get():
             messagebox.showerror("Error", "Please select a base FST file."); return
         if not self.file_structure:
             messagebox.showerror("Error", "Please run 'Discover Parameters' before generating cases. The file map is missing.")
             return
-        if not self.parameter_entries:
-            messagebox.showerror("Error", "Please add at least one parameter to vary."); return
+        if not is_geom_active and not self.parameter_entries:
+            messagebox.showerror("Error", "Please enable a geometric variation or add at least one standard parameter."); return
+        if is_geom_active and not GEOMETRY_ENGINE_AVAILABLE:
+            messagebox.showerror("Error", "Geometric variation is enabled, but the engine script ('advanced_geometry_engine.py') is missing."); return
 
         self.setup_log.delete(1.0, tk.END)
         self.log("Starting test case generation...")
@@ -2271,118 +1185,91 @@ class OpenFASTTestCaseGUI:
             shutil.rmtree(output_path, ignore_errors=True)
             output_path.mkdir(parents=True, exist_ok=True)
             
-            # --- 3. Build the Grid of Standard Parameter Variations ---
-            standard_param_combinations = []
-            dist_type = self.distribution_var.get()
+            # --- 3. Build the Combined Grid of All Variations ---
+            all_param_steps = []
             
-            if dist_type == "grid_search":
-                param_values_list = []
-                for entry in self.parameter_entries:
-                    param_type = entry['param_info']['type']
-                    values = []
-                    if param_type == 'float':
-                        start, end, steps = entry['start_var'].get(), entry['end_var'].get(), entry['steps_var'].get()
-                        values = np.linspace(start, end, steps) if steps > 1 else [start]
-                    elif param_type == 'int':
-                        if entry['int_mode_var'].get() == 'Range':
+            height_scales = np.linspace(self.geom_height_start_scale.get(), self.geom_height_end_scale.get(), self.geom_height_steps.get()) if is_geom_height else [1.0]
+            all_param_steps.append(height_scales)
+
+            diam_scales = np.linspace(self.geom_diam_start_scale.get(), self.geom_diam_end_scale.get(), self.geom_diam_steps.get()) if is_geom_diam else [1.0]
+            all_param_steps.append(diam_scales)
+
+            standard_param_combinations = [()]
+            if self.parameter_entries:
+                if self.distribution_var.get() == "grid_search":
+                    param_values_list = []
+                    for entry in self.parameter_entries:
+                        param_type = entry['param_info']['type']; values = []
+                        if param_type == 'float':
                             start, end, steps = entry['start_var'].get(), entry['end_var'].get(), entry['steps_var'].get()
-                            values = np.round(np.linspace(start, end, steps)).astype(int) if steps > 1 else [int(round(start))]
-                        else:
-                            values = [int(i.strip()) for i in entry['list_var'].get().split(',') if i.strip()]
-                    elif param_type == 'bool':
-                        values = [True, False] if "Vary" in entry['bool_var'].get() else [entry['bool_var'].get() == "True"]
-                    elif param_type == 'option':
-                        values = [opt.strip().strip('"\'') for opt in entry['options_var'].get().split(',') if opt.strip()]
-                    param_values_list.append(values if values else [entry['param_info']['original_value']])
-                
-                if param_values_list:
-                    standard_param_combinations = list(itertools.product(*param_values_list))
-                    self.log(f"Standard Parameters: Grid Search with {len(standard_param_combinations)} combinations")
-            
-            elif dist_type == "csv_columnwise":
-                all_lists = []
-                for entry in self.parameter_entries:
-                    param_info = entry['param_info']
-                    str_values = [item.strip() for item in entry['csv_var'].get().split(',') if item.strip()]
-                    try:
-                        if param_info['type'] == 'float':
-                            typed_values = [float(v) for v in str_values]
-                        elif param_info['type'] == 'int':
-                            typed_values = [int(float(v)) for v in str_values]
-                        elif param_info['type'] == 'bool':
-                            typed_values = [v.lower() in ['true', '1', 't', 'y', 'yes'] for v in str_values]
-                        else:
-                            typed_values = [v.strip('"\'') for v in str_values]
-                        all_lists.append(typed_values)
-                    except ValueError as e:
-                        messagebox.showerror("Input Error", f"Invalid value in CSV for '{entry['param_name']}'. Details: {e}")
-                        return
-                
-                if all_lists and all_lists[0]:
-                    first_len = len(all_lists[0])
-                    if any(len(lst) != first_len for lst in all_lists):
-                        messagebox.showerror("Input Error", f"All CSV inputs must have the same number of values.")
-                        return
-                    standard_param_combinations = list(zip(*all_lists))
-                    self.log(f"Standard Parameters: CSV Column-wise with {len(standard_param_combinations)} rows")
-            
-            else:  # Sampling distributions (LHS, uniform, normal)
-                num_samples = self.num_cases.get()
-                numeric_params = [p for p in self.parameter_entries if p['param_info']['type'] in ['float', 'int']]
-                
-                if not numeric_params:
-                    messagebox.showerror("Error", "Sampling distributions require at least one numeric parameter.")
+                            values = np.linspace(start, end, steps) if steps > 1 else [start]
+                        elif param_type == 'int':
+                            if entry['int_mode_var'].get() == 'Range':
+                                start, end, steps = entry['start_var'].get(), entry['end_var'].get(), entry['steps_var'].get()
+                                values = np.round(np.linspace(start, end, steps)).astype(int) if steps > 1 else [int(round(start))]
+                            else: values = [int(i.strip()) for i in entry['list_var'].get().split(',') if i.strip()]
+                        elif param_type == 'bool': values = [True, False] if "Vary" in entry['bool_var'].get() else [entry['bool_var'].get() == "True"]
+                        elif param_type == 'option': values = [opt.strip().strip('"\'') for opt in entry['options_var'].get().split(',') if opt.strip()]
+                        param_values_list.append(values if values else [entry['param_info']['original_value']])
+                    if param_values_list:
+                        standard_param_combinations = list(itertools.product(*param_values_list))
+                else:
+                    messagebox.showerror("Logic Error", "Geometric variation is only compatible with 'Grid Search' distribution type.")
                     return
-                
-                try:
-                    from scipy.stats import qmc
-                    if dist_type == "latin_hypercube":
-                        sample = qmc.LatinHypercube(d=len(numeric_params)).sample(n=num_samples)
-                    else:
-                        sample = np.random.rand(num_samples, len(numeric_params))
-                except ImportError:
-                    self.log("Warning: 'scipy' not found. Falling back to uniform random.")
-                    sample = np.random.rand(num_samples, len(numeric_params))
-                
-                param_values = []
-                for i, entry in enumerate(numeric_params):
-                    min_val, max_val = entry['start_var'].get(), entry['end_var'].get()
-                    scaled = min_val + (max_val - min_val) * sample[:, i]
-                    param_values.append(np.round(scaled).astype(int) if entry['param_info']['type'] == 'int' else scaled)
-                
-                standard_param_combinations = list(zip(*param_values))
-                self.log(f"Standard Parameters: {dist_type} sampling with {len(standard_param_combinations)} samples")
+            all_param_steps.append(standard_param_combinations)
 
-            if not standard_param_combinations:
-                self.log("Error: No parameter combinations were generated. Check your inputs.")
-                return
-
-            num_cases = len(standard_param_combinations)
+            case_combinations = list(itertools.product(*all_param_steps))
+            num_cases = len(case_combinations)
             self.log(f"Total combinations to generate: {num_cases}")
-            
-            if num_cases > 10000:
-                if not messagebox.askyesno("Large Number of Cases", f"You are about to generate {num_cases} test cases. This may take a long time. Continue?"):
-                    return
-            
             test_summary = []
             
-            # --- 4. Main Generation Loop ---
-            for i, standard_combo in enumerate(standard_param_combinations):
+            # --- 4. Prepare for Generation ---
+            model = None
+            if is_geom_active:
+                # Find the required file paths from the already successful discovery
+                ed_key = next((k for k, v in self.file_structure.items() if 'elastodyn' in v['path'].name.lower()), None)
+                hd_key = next((k for k, v in self.file_structure.items() if 'hydrodyn' in v['path'].name.lower()), None)
+                md_key = next((k for k, v in self.file_structure.items() if 'moordyn' in v['path'].name.lower()), None)
+
+                if not all([ed_key, hd_key, md_key]):
+                    raise FileNotFoundError("Could not find ElastoDyn, HydroDyn, or MoorDyn files in the discovered file structure. Please re-run discovery.")
+
+                ed_path = self.file_structure[ed_key]['path']
+                hd_path = self.file_structure[hd_key]['path']
+                md_path = self.file_structure[md_key]['path']
+                
+                # Pass the resolved paths directly to the engine
+                model = engine.PlatformModel(ed_path=ed_path, hd_path=hd_path, md_path=md_path)
+
+            if model:
+                for msg in model.log: self.log(f"  [Engine Discovery] {msg}")
+
+            # --- 5. Main Generation Loop ---
+            for i, combination in enumerate(case_combinations):
                 case_name = f"case_{i+1:04d}"
                 case_dir = output_path / case_name
                 self.log(f"Creating test case {i+1}/{num_cases}: {case_name}")
                 case_dir.mkdir(exist_ok=True)
                 
-                # 4.A. Copy ALL discovered files and rewrite their internal paths
+                # 5.A. Copy ALL discovered files and rewrite their internal paths using the new robust method
                 self.log(f"  Copying and rewriting {len(self.file_structure)} model files...")
                 for file_key, file_info in self.file_structure.items():
                     source_path = file_info['path']
                     dest_path = case_dir / source_path.name
+                    # This single call replaces all the old complex logic
                     self._copy_and_rewrite_paths(source_path, dest_path)
 
                 case_params = {}
+                height_scale, diam_scale, standard_combo = combination
 
-                # 4.B. Apply STANDARD parameter variations
+                # 5.B. Apply GEOMETRIC variation (if active)
+                if is_geom_active:
+                    self.log(f"  Applying geometric variation: H_scale={height_scale:.3f}, D_scale={diam_scale:.3f}")
+                    case_params.update({'height_scale': float(height_scale), 'diameter_scale': float(diam_scale)})
+                    variation_data = model.generate_variation(height_scale=height_scale, diameter_scale=diam_scale)
+                    engine.update_files_for_case(case_dir, variation_data, model)
+
+                # 5.C. Apply STANDARD parameter variations
                 if self.parameter_entries and standard_combo:
                     for j, value in enumerate(standard_combo):
                         entry = self.parameter_entries[j]
@@ -2396,37 +1283,22 @@ class OpenFASTTestCaseGUI:
                         case_params[f"{file_key}/{param_name}"] = value
                         self.modify_parameter_in_file(case_dir, file_key, param_name, value, p_info)
 
-                # 4.C. Save case-specific metadata
-                case_info_data = {
-                    'case_name': case_name,
-                    'fst_file': Path(self.base_fst_path.get()).name,
-                    'parameters': case_params
-                }
+                # 5.D. Save case-specific metadata
+                case_info_data = {'case_name': case_name, 'fst_file': Path(self.base_fst_path.get()).name, 'parameters': case_params}
                 test_summary.append(case_info_data)
-                with open(case_dir / 'case_info.json', 'w') as f:
-                    json.dump(case_info_data, f, indent=2)
+                with open(case_dir / 'case_info.json', 'w') as f: json.dump(case_info_data, f, indent=2)
 
-            # --- 5. Finalize and Save Summary ---
+            # --- 6. Finalize and Save Summary ---
             summary_file = output_path / "test_cases_summary.json"
-            summary_data = {
-                'generation_date': datetime.now().isoformat(),
-                'base_fst_file': self.base_fst_path.get(),
-                'num_cases': num_cases,
-                'parameter_distribution': self.distribution_var.get() if self.parameter_entries else None,
-                'test_cases': test_summary
-            }
-            with open(summary_file, 'w') as f:
-                json.dump(summary_data, f, indent=4)
+            with open(summary_file, 'w') as f: json.dump({'generation_date': datetime.now().isoformat(), 'base_fst_file': self.base_fst_path.get(), 'num_cases': num_cases, 'test_cases': test_summary}, f, indent=4)
             
             self.log(f"Successfully generated {num_cases} test cases in '{output_path}'")
             if messagebox.askyesno("Success", f"Generated {num_cases} test cases.\nSwitch to 'Run Simulations' tab?"):
-                self.notebook.select(self.run_tab)
-                self.load_run_cases()
+                self.notebook.select(self.run_tab); self.load_run_cases()
 
         except Exception as e:
             self.log(f"Error: {str(e)}\n{traceback.format_exc()}")
             messagebox.showerror("Error", f"Failed to generate test cases: {str(e)}")
-
     def modify_parameter_in_file(self, case_dir, file_type, param_name, value, param_info):
         original_path = self.file_structure[file_type]['path']
         file_path = case_dir / original_path.name
@@ -2565,40 +1437,40 @@ class OpenFASTTestCaseGUI:
 
     def update_total_cases(self, *args):
         dist_mode = self.distribution_var.get()
-        
+        total = 1
+
+        # Factor in geometric variations if enabled
+        if self.geom_vary_height_enabled.get():
+            try:
+                total *= self.geom_height_steps.get()
+            except (tk.TclError, ValueError): pass
+
+        if self.geom_vary_diam_enabled.get():
+            try:
+                total *= self.geom_diam_steps.get()
+            except (tk.TclError, ValueError): pass
+
         if dist_mode == "grid_search":
-            total = 1
-            if not self.parameter_entries:
+            is_geom_active = self.geom_vary_height_enabled.get() or self.geom_vary_diam_enabled.get()
+            if not self.parameter_entries and not is_geom_active:
                 total = 0
             
             for entry in self.parameter_entries:
                 try:
-                    if entry['param_info']['type'] == 'float':
-                        total *= entry['steps_var'].get()
-                    elif entry['param_info']['type'] == 'int':
-                        if entry['int_mode_var'].get() == 'Range':
-                            total *= entry['steps_var'].get()
-                        else:
-                            total *= max(1, len([i for i in entry['list_var'].get().split(',') if i.strip()]))
-                    elif entry['param_info']['type'] == 'bool':
-                        total *= 2 if "Vary" in entry['bool_var'].get() else 1
-                    elif entry['param_info']['type'] == 'option':
-                        total *= max(1, len([o for o in entry['options_var'].get().split(',') if o.strip()]))
-                except (tk.TclError, ValueError):
-                    pass
+                    if entry['param_info']['type'] == 'float': total *= entry['steps_var'].get()
+                    elif entry['param_info']['type'] == 'int': total *= entry['steps_var'].get() if entry['int_mode_var'].get() == 'Range' else max(1, len([i for i in entry['list_var'].get().split(',') if i.strip()]))
+                    elif entry['param_info']['type'] == 'bool': total *= 2 if "Vary" in entry['bool_var'].get() else 1
+                    elif entry['param_info']['type'] == 'option': total *= max(1, len([o for o in entry['options_var'].get().split(',') if o.strip()]))
+                except (tk.TclError, ValueError): pass
             self.num_cases.set(total)
-        
         elif dist_mode == "csv_columnwise":
             total_csv = 0
             if self.parameter_entries:
-                try:
-                    total_csv = len([i for i in self.parameter_entries[0]['csv_var'].get().split(',') if i.strip()])
-                except (tk.TclError, IndexError):
-                    pass
-            self.num_cases.set(total_csv)
-        
-        else:  # Sampling distributions, user sets the number
-            pass
+                try: total_csv = len([i for i in self.parameter_entries[0]['csv_var'].get().split(',') if i.strip()])
+                except (tk.TclError, IndexError): pass
+            self.num_cases.set(total_csv * total) # Multiply by geometry steps
+        else: # Sampling
+            self.num_cases_spinbox.config(state='normal')
             
     def browse_fst_file(self):
         filename = filedialog.askopenfilename(title="Select base FST file", filetypes=[("FST files", "*.fst"), ("All files", "*.*")])
@@ -2708,17 +1580,8 @@ class OpenFASTTestCaseGUI:
     def run_selected_post_proc(self):
         selected_items = self.post_proc_tree.selection()
         if not selected_items: messagebox.showwarning("Warning", "No cases selected for post-processing."); return
-        
-        tasks_selected = self.run_convert_csv.get() or self.run_dalembert.get() or self.run_plotting.get() or self.run_frequency_analysis.get()
-        if not tasks_selected:
-            messagebox.showwarning("Warning", "No post-processing tasks selected."); return
-
-        if self.run_frequency_analysis.get() and not self.frequency_analysis_column.get().strip():
-            messagebox.showerror("Input Error", "Please specify a column name for Frequency Analysis.")
-            return
-
+        if not (self.run_convert_csv.get() or self.run_dalembert.get() or self.run_plotting.get()): messagebox.showwarning("Warning", "No post-processing tasks selected."); return
         if not messagebox.askyesno("Confirm", f"This will process {len(selected_items)} cases. Continue?"): return
-        
         self.post_proc_progress_var.set(0); self.post_proc_completed_cases = 0; self.post_proc_total_cases = len(selected_items)
         while not self.post_proc_job_queue.empty(): self.post_proc_job_queue.get()
         for item_id in selected_items: self.post_proc_job_queue.put(item_id)
@@ -2769,6 +1632,7 @@ class OpenFASTTestCaseGUI:
         csv_path = main_out_file.with_suffix('.csv')
         overall_success = True
         
+        # --- FIX: Dynamic analysis time based on TMax from FST file ---
         analysis_start_time = 300.0 # Default fallback
         fst_path = case_path / case_data['fst_file']
         try:
@@ -2781,6 +1645,7 @@ class OpenFASTTestCaseGUI:
                         break
         except Exception as e:
             self.message_queue.put(('post_proc_log', f"[{case_name}] WARNING: Could not parse TMax from {fst_path.name}. Using default start time. Error: {e}"))
+        # --- END FIX ---
 
         if self.run_convert_csv.get():
             try:
@@ -2795,6 +1660,7 @@ class OpenFASTTestCaseGUI:
                 dalembert_dir = case_path / "dalembert_analysis"
                 dalembert_dir.mkdir(exist_ok=True)
                 runner = DalembertRunner(self.message_queue, case_name, 'post_proc_log')
+                # Pass the dynamic start time to the runner
                 runner.run(fst=str(fst_path), glue_out=str(main_out_file), outdir=str(dalembert_dir), analysis_start_time=analysis_start_time)
             except Exception as e: 
                 self.message_queue.put(('post_proc_log', f"[{case_name}] ERROR in d'Alembert analysis: {e}\n{traceback.format_exc()}")); overall_success = False
@@ -2804,36 +1670,17 @@ class OpenFASTTestCaseGUI:
                 self.message_queue.put(('post_proc_log', f"[{case_name}] Skipping plotting because CSV file '{csv_path.name}' not found."))
                 overall_success = False
             else:
+                # --- FIX: Use a lock to make plotting thread-safe ---
                 with self.plotting_lock:
                     try:
                         plot_dir = case_path / "plots"
                         plot_dir.mkdir(exist_ok=True)
                         plot_runner = PlottingRunner(self.message_queue, case_name, 'post_proc_log')
+                        # Pass the dynamic start time for stats calculation
                         plot_runner.run(csv_file=str(csv_path), output_dir=str(plot_dir), case_name=case_name, mean_start=analysis_start_time, always_minmax=False, minmax_range_frac=0.05, minmax_abs=0.0)
                     except Exception as e: 
                         self.message_queue.put(('post_proc_log', f"[{case_name}] ERROR in plotting: {e}\n{traceback.format_exc()}")); overall_success = False
         
-        # --- NEW: Run Frequency Analysis ---
-        if self.run_frequency_analysis.get() and SCIPY_AVAILABLE:
-            if not csv_path.exists():
-                self.message_queue.put(('post_proc_log', f"[{case_name}] Skipping Frequency Analysis because CSV file '{csv_path.name}' not found."))
-                overall_success = False
-            else:
-                with self.plotting_lock: # Reuse plotting lock as it also uses matplotlib
-                    try:
-                        freq_dir = case_path / "frequency_analysis"
-                        freq_dir.mkdir(exist_ok=True)
-                        freq_runner = FrequencyAnalysisRunner(self.message_queue, case_name, 'post_proc_log')
-                        freq_runner.run(
-                            csv_file=str(csv_path),
-                            column_name=self.frequency_analysis_column.get(),
-                            output_dir=str(freq_dir),
-                            start_time=analysis_start_time
-                        )
-                    except Exception as e:
-                        self.message_queue.put(('post_proc_log', f"[{case_name}] ERROR in Frequency Analysis: {e}\n{traceback.format_exc()}"))
-                        overall_success = False
-
         return overall_success
 
     def show_case_context_menu(self, event, tree, case_dict):
@@ -2942,13 +1789,9 @@ class OpenFASTTestCaseGUI:
             # --- Define text and formatting tags ---
             text_widget.tag_configure('h1', font=('TkDefaultFont', 16, 'bold'), spacing3=10, foreground='#003366')
             text_widget.tag_configure('h2', font=('TkDefaultFont', 12, 'bold'), spacing1=15, spacing3=5, foreground='#005A9E')
-            text_widget.tag_configure('h3', font=('TkDefaultFont', 10, 'bold'), spacing1=10, spacing3=3, foreground='#007ACC')
             text_widget.tag_configure('bold', font=('TkDefaultFont', 9, 'bold'))
             text_widget.tag_configure('code', font=('Consolas', 9), background='#f0f0f0', relief='raised', borderwidth=1, lmargin1=20, lmargin2=20, rmargin=20)
-            text_widget.tag_configure('code_block', font=('Consolas', 8), background='#f8f8f8', relief='sunken', borderwidth=1, lmargin1=30, lmargin2=30, rmargin=30, spacing1=5, spacing3=5)
             text_widget.tag_configure('list_item', lmargin1=20, lmargin2=20)
-            text_widget.tag_configure('warning', foreground='#D14', font=('TkDefaultFont', 9, 'bold'))
-            text_widget.tag_configure('success', foreground='#0A0', font=('TkDefaultFont', 9, 'bold'))
 
             # --- Tutorial Content ---
             tutorial_text = [
@@ -2988,11 +1831,9 @@ class OpenFASTTestCaseGUI:
                 (". This creates a subdirectory for each case, copies all necessary files, modifies the parameters, and saves a summary file (", ''),
                 ("test_cases_summary.json", 'code'),
                 (").\n\n", ''),
-                
-                ("⚠ IMPORTANT SETUP REQUIREMENT\n", 'warning'),
-                ("If using the 5MW OC4 example, the 5MW_Baseline folder must be copied into each test case directory.\n\n", 'warning'),
+                ("IMPORTANT NOTES: 5MW BASELINE FOLDER MUST BE COPY IN THE TEST CASE GENERATION IF USING EXAMPLE TEST CASE", 'h2'),
 
-                ("Tab 2: Run Simulations\n", 'h2'),
+                ("\nTab 2: Run Simulations\n", 'h2'),
                 ("The goal of this tab is to execute the OpenFAST simulations for the generated cases.\n\n", ''),
                 ("1. Configuration:", 'bold'),
                 (" Browse for your ", ''),
@@ -3028,9 +1869,6 @@ class OpenFASTTestCaseGUI:
                 ("   • ", 'list_item'),
                 ("Generate Plots:", 'bold'),
                 (" Automatically creates plots for key output channels (platform motion, tower loads, etc.) with statistical annotations.\n", 'list_item'),
-                ("   • ", 'list_item'),
-                ("Run Frequency Analysis:", 'bold'),
-                (" (NEW!) For free-decay tests, this calculates natural frequencies and damping ratios. Requires the 'scipy' library. Specify the column to analyze (e.g., 'PtfmHeave').\n", 'list_item'),
                 ("2. Load Results:", 'bold'),
                 (" Click ", ''),
                 ("Load Results", 'code'),
@@ -3044,118 +1882,11 @@ class OpenFASTTestCaseGUI:
                 ("Right-click on any case", 'bold'),
                 (" in the list and select ", ''),
                 ("Open Folder", 'code'),
-                (" to view the generated CSV files, reports, and plots.\n\n", ''),
-
-                ("Configuring OpenFAST Output Channels for d'Alembert Analysis\n", 'h2'),
-                ("For accurate load analysis, you must configure specific output channels in your OpenFAST input files.\n\n", ''),
-
-                ("Required Output Channels by Module\n", 'h3'),
-                
-                ("1. Main FST File (.fst)\n", 'bold'),
-                ("Ensure the following modules are enabled:\n", ''),
-                ("CompElast = 1    (ElastoDyn - required)\n", 'code_block'),
-                ("CompAero = 2     (AeroDyn - if analyzing aerodynamic loads)\n", 'code_block'),
-                ("CompHydro = 1    (HydroDyn - required for offshore)\n", 'code_block'),
-                ("CompMooring = 3  (MoorDyn - required for moored platforms)\n\n", 'code_block'),
-
-                ("2. ElastoDyn Output Channels\n", 'bold'),
-                ("Add these channels to the ", ''),
-                ("OutList", 'code'),
-                (" section of your ElastoDyn input file:\n", ''),
-                ("\"TwrBsFxt\"  - Tower base fore-aft force (X)\n", 'code_block'),
-                ("\"TwrBsFyt\"  - Tower base side-side force (Y)\n", 'code_block'),
-                ("\"TwrBsFzt\"  - Tower base vertical force (Z)\n", 'code_block'),
-                ("\"TwrBsMxt\"  - Tower base roll moment\n", 'code_block'),
-                ("\"TwrBsMyt\"  - Tower base pitch moment\n", 'code_block'),
-                ("\"TwrBsMzt\"  - Tower base yaw moment\n", 'code_block'),
-                ("\"PtfmRoll\"  - Platform roll angle\n", 'code_block'),
-                ("\"PtfmPitch\" - Platform pitch angle\n", 'code_block'),
-                ("\"PtfmYaw\"   - Platform yaw angle\n", 'code_block'),
-                ("\"PtfmSurge\" - Platform surge displacement\n", 'code_block'),
-                ("\"PtfmSway\"  - Platform sway displacement\n", 'code_block'),
-                ("\"PtfmHeave\" - Platform heave displacement\n\n", 'code_block'),
-
-                ("3. HydroDyn Output Channels\n", 'bold'),
-                ("Add these channels to the ", ''),
-                ("OutList", 'code'),
-                (" section of your HydroDyn input file:\n", ''),
-                ("\"HydroFxi\"  - Total hydrodynamic force (X)\n", 'code_block'),
-                ("\"HydroFyi\"  - Total hydrodynamic force (Y)\n", 'code_block'),
-                ("\"HydroFzi\"  - Total hydrodynamic force (Z)\n", 'code_block'),
-                ("\"HydroMxi\"  - Total hydrodynamic moment (roll)\n", 'code_block'),
-                ("\"HydroMyi\"  - Total hydrodynamic moment (pitch)\n", 'code_block'),
-                ("\"HydroMzi\"  - Total hydrodynamic moment (yaw)\n\n", 'code_block'),
-
-                ("4. MoorDyn Output Channels (CRITICAL for Accurate Results)\n", 'bold'),
-                ("For HIGH-FIDELITY mooring force analysis, you MUST add connection point forces to the ", ''),
-                ("OUTPUTS", 'code'),
-                (" section of your MoorDyn input file.\n\n", ''),
-                
-                ("✓ RECOMMENDED Configuration (0% error):\n", 'success'),
-                ("Add the following to the OUTPUTS section in your MoorDyn file:\n", ''),
-                ("------------------------ OUTPUTS --------------------------------------------\n", 'code_block'),
-                ("FairTen1    ! Fairlead 1 tension magnitude (for validation)\n", 'code_block'),
-                ("FairTen2    ! Fairlead 2 tension magnitude\n", 'code_block'),
-                ("FairTen3    ! Fairlead 3 tension magnitude\n", 'code_block'),
-                ("Con4Fx      ! Fairlead 1 force X-component (HIGH FIDELITY)\n", 'code_block'),
-                ("Con4Fy      ! Fairlead 1 force Y-component\n", 'code_block'),
-                ("Con4Fz      ! Fairlead 1 force Z-component\n", 'code_block'),
-                ("Con5Fx      ! Fairlead 2 force X-component (HIGH FIDELITY)\n", 'code_block'),
-                ("Con5Fy      ! Fairlead 2 force Y-component\n", 'code_block'),
-                ("Con5Fz      ! Fairlead 2 force Z-component\n", 'code_block'),
-                ("Con6Fx      ! Fairlead 3 force X-component (HIGH FIDELITY)\n", 'code_block'),
-                ("Con6Fy      ! Fairlead 3 force Y-component\n", 'code_block'),
-                ("Con6Fz      ! Fairlead 3 force Z-component\n", 'code_block'),
-                ("END\n", 'code_block'),
-                ("-----------------------------------------------------------------------------\n\n", 'code_block'),
-
-                ("Understanding MoorDyn Point Numbering:\n", 'bold'),
-                ("For a typical OC4 3-line configuration:\n", ''),
-                ("  • Points 1-3: Anchors (FIXED to seabed)\n", 'list_item'),
-                ("  • Points 4-6: Fairleads (VESSEL attachment to platform)\n", 'list_item'),
-                ("  • Line 1 connects Point 1 (anchor) to Point 4 (fairlead)\n", 'list_item'),
-                ("  • Line 2 connects Point 2 (anchor) to Point 5 (fairlead)\n", 'list_item'),
-                ("  • Line 3 connects Point 3 (anchor) to Point 6 (fairlead)\n\n", 'list_item'),
-
-                ("Therefore, use ", ''),
-                ("Con4/5/6", 'code'),
-                (" for the three fairlead forces.\n\n", ''),
-
-                ("⚠ DEPRECATED Configuration (avoid if possible):\n", 'warning'),
-                ("DO NOT use Line{k}Fx/Fy/Fz outputs - these may report anchor-end forces instead of fairlead forces, causing errors up to 3000%!\n\n", 'warning'),
-
-                ("Fallback Mode:\n", 'bold'),
-                ("If MoorDyn force components are not available, the analysis will automatically fall back to geometric approximation using fairlead tension and straight-line geometry. This method has ~5-10% reduced accuracy but will still produce reasonable results.\n\n", ''),
-
-                ("5. Verification Checklist\n", 'bold'),
-                ("Before running simulations, verify:\n", ''),
-                ("  ✓ All required ElastoDyn outputs are enabled (TwrBsF*, TwrBsM*, Ptfm*)\n", 'list_item'),
-                ("  ✓ All required HydroDyn outputs are enabled (HydroF*, HydroM*)\n", 'list_item'),
-                ("  ✓ MoorDyn connection point forces are configured (Con{4,5,6}Fx/Fy/Fz)\n", 'list_item'),
-                ("  ✓ FairTen{1,2,3} outputs are included for validation\n", 'list_item'),
-                ("  ✓ Simulation duration (TMax) is sufficient for steady-state analysis\n", 'list_item'),
-                ("  ✓ Time step (DT) is small enough to capture dynamics\n\n", 'list_item'),
-
-                ("Expected Analysis Results:\n", 'h3'),
-                ("When properly configured, the d'Alembert analysis will:\n", ''),
-                ("  • Generate a comprehensive staticized_report.txt with:\n", 'list_item'),
-                ("    - System geometry and mass properties\n", 'list_item'),
-                ("    - Mooring force statistics (mean, min, max, std dev)\n", 'list_item'),
-                ("    - Load extrema (force and moment peaks)\n", 'list_item'),
-                ("    - Validation of force calculation methods\n", 'list_item'),
-                ("  • Create loads_extrema_after{T}s.csv with critical load cases\n", 'list_item'),
-                ("  • Show 0.00% validation error for high-fidelity mooring forces\n", 'list_item'),
-                ("  • Display realistic force magnitudes (7-12 MN for OC4 semi)\n\n", 'list_item'),
+                (" to view the generated CSV files, reports, and plots.\n", ''),
 
                 ("Final Notes\n", 'h2'),
-                ("Thank you for using the OpenFAST Workflow Manager! We hope this tool enhances your simulation workflow and analysis efficiency.\n\n", ''),
-                ("For further assistance or to report issues, please visit our GitHub repository or contact the development team.\n\n", ''),
-                ("Author: Trang Vinh Nghi\n", 'bold'),
-                ("Development Supported By: Department of Aerospace Engineering\n", ''),
-                ("                         Ho Chi Minh City University of Technology\n", ''),
-                ("                         Vietnam National University\n\n", ''),
-                ("Email: trangvinhnghi2212@gmail.com\n", ''),
-                ("GitHub: https://github.com/TomatoXoX/OpenFAST_GUI_Toolbox\n", ''),
+                ("Thank you for using the OpenFAST Workflow Manager! We hope this tool enhances your simulation workflow and analysis efficiency.\n", ''),
+                ("For further assistance or to report issues, please visit our GitHub repository or contact the development team. \nAuthor: Trang Vinh Nghi\nDevelopment Supported By the Department of Aerospace Engineering - Ho Chi Minh City University of Technology - Viet Nam National University \nEmail: trangvinhnghi2212@gmail.com\nGitHub Repo Link: https://github.com/TomatoXoX/OpenFAST_GUI_Toolbox", '')
             ]
 
             # Insert the text with the defined tags
