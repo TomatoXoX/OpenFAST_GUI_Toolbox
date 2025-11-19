@@ -1,0 +1,289 @@
+# OpenFAST Workflow Manager – Documentation Overview
+
+## Project Structure
+
+```
+openfast_workflow/
+├── main.py
+├── gui.py
+├── processing/
+│   ├── __init__.py
+│   ├── converters.py
+│   ├── plotting.py
+│   ├── frequency.py
+│   └── dalembert.py
+└── utils/
+    ├── __init__.py
+    └── file_utils.py
+```
+
+- `main.py` – Entry point; launches the Tkinter GUI.
+- `gui.py` – Tkinter application that orchestrates case generation, simulation runs, and post-processing.
+- `processing/` – Headless processing back-end (CSV conversion, plotting, frequency analysis, d’Alembert staticization).
+- `utils/` – Shared helpers (currently file parsing utilities).
+
+---
+
+## File-by-File Method Usage Guide
+
+### `main.py`
+
+| Name | Type | Purpose | Usage |
+| --- | --- | --- | --- |
+| `main` | function | Imports and invokes `gui.main()` to start the GUI. | Run `python main.py` or call programmatically: `import main; main.main()` |
+
+---
+
+### `gui.py`
+
+#### Module-Level Function
+
+| Name | Type | Purpose | Usage |
+| --- | --- | --- | --- |
+| `main()` | function | Sets high-DPI awareness on Windows, creates `Tk` root, instantiates `OpenFASTTestCaseGUI`, enters main loop. | Called automatically from `main.py`. Call directly for manual launch: `from gui import main; main()` |
+
+#### Class `OpenFASTTestCaseGUI(tk.Frame)`
+
+Instantiate with a `tk.Tk` root: `app = OpenFASTTestCaseGUI(root)`. Methods below are generally invoked internally by event bindings, but can be called directly for scripting.
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, root)` | Initializes UI state, builds tabs, starts message queue polling. Call once per root window. |
+| `_set_app_icon(self)` | Tries to set window icon from `logo.ico`. Called during init; call again if icon path changes. |
+| `_setup_style(self)` | Configures the ttk theme/colors. Internal helper. |
+| `_init_vars(self)` | Creates Tkinter `Variable` instances and shared state dicts. Invoked during initialization. |
+| `_create_notebook_and_tabs(self)` | Builds the notebook widget and populates tabs via helper constructors. |
+| `create_setup_tab(self, parent_frame)` | Lays out widgets for case setup tab. Pass the ttk frame created inside `_create_notebook_and_tabs`. |
+| `create_run_tab(self, parent_frame)` | Lays out widgets for simulation execution tab. |
+| `create_post_proc_tab(self, parent_frame)` | Lays out widgets for post-processing tab. |
+| `_create_task_tab_layout(...)` | Shared builder for tab sections that host Treeview + buttons. Accepts callbacks for loading/running tasks. Call with appropriate arguments if you add new task tabs. |
+| `create_file_selection_section(self, parent)` | Adds base FST and output directory selectors to setup tab. |
+| `create_test_config_section(self, parent)` | Adds distribution selector and case count controls. |
+| `create_parameter_discovery_section(self, parent)` | Adds “Discover Parameters” controls. |
+| `create_parameter_section(self, parent)` | Adds parameter list frame with scrollable region. |
+| `create_action_section(self, parent)` | Adds buttons to generate/load/save configurations. |
+| `create_log_section(self, parent, log_attr_name, title)` | Creates a scrolled log widget, stores reference on `self` under `log_attr_name`. Returns the widget. Useful for new log areas. |
+| `discover_parameters(self)` | Scans base FST and referenced files; populates `self.discovered_parameters` and `self.file_structure`. Invoke after selecting base FST. |
+| `_discover_and_parse_files_recursively(self, file_path, file_info_by_path, processed_paths)` | Internal DFS that reads files referenced by the base FST. Usually not called directly. |
+| `extract_parameters_from_file(self, lines)` | Parses a list of strings for parameter definitions. Returns metadata dict. Use to analyze individual files. |
+| `extract_unit(line)` *(staticmethod)* | Pulls a unit string from a line (if present). Helpful when integrating additional parsers. |
+| `parse_parameter_value(value_str, description)` *(staticmethod)* | Classifies a raw value string (float/int/bool/option). Returns structured info or `None`. |
+| `generate_test_cases(self)` | Applies parameter variations, copies template files, writes case directories + summary JSON. Call after parameters configured. |
+| `_copy_and_rewrite_paths(self, source_path, dest_path)` | Copies text files while rewriting relative references to basename. Use when adding new file types that need path normalization. |
+| `modify_parameter_in_file(self, case_dir, file_key, param_name, value, param_info)` | Rewrites a specific parameter within a generated case. Accepts the metadata from discovery. |
+| `format_parameter_line(line, new_value, param_info)` *(staticmethod)* | Produces a rewritten line string for a parameter assignment with updated value. |
+| `_load_cases_to_tree(self, tree, case_dict, log_widget)` | Reads `test_cases_summary.json`, populates Treeview, and stores case metadata. Call whenever a tree needs refreshing. |
+| `load_run_cases(self)` | Convenience wrapper for `_load_cases_to_tree` targeting the run tab. |
+| `load_post_proc_cases(self)` | Wrapper for post-processing tab. |
+| `run_selected_cases(self)` | Starts worker threads to execute OpenFAST runs for selected tree entries. Ensures confirmation dialog. |
+| `run_selected_post_proc(self)` | Validates task checkboxes, then dispatches post-processing threads. |
+| `_start_task(self, task_key, task_name)` | Internal scheduler that seeds queues and spawns manager thread for either “run” or “post_proc”. |
+| `_task_manager_thread(self, task_key)` | Background manager that spawns worker threads and re-enables buttons upon completion. Not intended for direct use. |
+| `run_worker(self)` | Worker thread target for executing OpenFAST simulations. Reads queue, updates UI via message queue. Override if custom run logic needed. |
+| `post_proc_worker(self)` | Worker thread target for post-processing tasks. |
+| `run_post_processing_steps(self, case_data)` | Executes selected processing tasks in sequence (CSV conversion, d’Alembert, plotting, frequency). Returns `True`/`False` for success. Invoke manually to process a single case programmatically. |
+| `show_case_context_menu(self, event, tree, case_dict)` | Context menu handler for case Treeviews. Call inside new Treeviews to reuse behavior. |
+| `open_folder(path)` *(staticmethod)* | Opens a folder in OS file explorer. Use for quick shell integration. |
+| `show_file_structure(self)` | Displays a modal listing discovered files/parameters. |
+| `save_config(self)` | Serializes current GUI configuration (parameters + distribution) to JSON via file dialog. |
+| `load_config(self)` | Loads parameter configuration from JSON, optionally triggering discovery. |
+| `clear_parameters(self)` | Clears configured parameter entries and updates derived counts. |
+| `log(self, message)` | Appends a message to the setup log with timestamp. Use for high-level info. |
+| `process_queue(self)` | Periodically drains `self.message_queue` to update logs/progress UI. Automatically scheduled every 100 ms; call `root.after` for different interval if needed. |
+| `create_tutorial_tab(self, parent_frame)` | Populates tutorial tab with formatted instructions. |
+| `browse_fst_file(self)` | Opens file dialog to choose base FST; optionally triggers discovery. |
+| `browse_output_dir(self)` | Opens directory chooser for output directory. |
+| `browse_openfast_exe(self)` | Opens file dialog to pick OpenFAST executable path. |
+| `show_parameter_selector(self)` | Opens modal Treeview allowing users to select discovered parameters to vary. Useful entry point to add parameters from code. |
+| `add_parameter_with_info(self, file_type, param_name, param_info)` | Adds a configured parameter row to GUI based on discovery metadata. Call when adding parameters programmatically. |
+| `remove_parameter(self, entry_to_remove)` | Removes a parameter entry from configuration UI. |
+| `on_distribution_change(self, event=None)` | Adjusts parameter input widgets based on selected distribution mode. Trigger after modifying `distribution_var`. |
+| `update_total_cases(self, *_)` | Recalculates estimated number of generated cases and updates `self.num_cases`. Call whenever parameter ranges change. |
+
+---
+
+### `processing/__init__.py`
+
+This package initializer re-exports classes and availability flags for convenience:
+
+- `ConverterRunner`
+- `PlottingRunner`
+- `MATPLOTLIB_AVAILABLE`
+- `FrequencyAnalysisRunner`
+- `SCIPY_AVAILABLE`
+- `DalembertRunner`
+
+Usage: `from processing import ConverterRunner`.
+
+No functions/methods defined here.
+
+---
+
+### `processing/converters.py`
+
+#### Class `ConverterRunner`
+
+Instantiate with a message queue (or any object with `.put(tuple)`), case name, and log type string used by the GUI.
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, message_queue, case_name, log_type)` | Set up logger context. |
+| `log(self, message)` | Places a formatted tuple `(log_type, "[case][CSV] message")` on message queue. Use if you need custom logging before/after conversion. |
+| `convert_openfast_to_csv_robust(self, input_file, output_file)` | Streams an OpenFAST `.out` text file to CSV, handling duplicate column headers and numerical formatting. Returns `True` on success. Typical usage: `converter = ConverterRunner(mq, "Case01", "post_proc_log"); converter.convert_openfast_to_csv_robust("case.out", "case.csv")`. |
+
+---
+
+### `processing/plotting.py`
+
+#### Module Constants
+
+- `MATPLOTLIB_AVAILABLE`: `True` if matplotlib is installed.
+- `blended_transform_factory`: Imported from matplotlib when available.
+
+#### Class `PlottingRunner`
+
+Instantiate with `(message_queue, case_name, log_type)`.
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, message_queue, case_name, log_type)` | Stores message queue context. |
+| `log(self, message)` | Posts `"[case][Plot] message"` to GUI log. |
+| `_simplify_header(name)` *(staticmethod)* | Strips whitespace and unit suffixes, lowercases string for matching. Use when implementing additional heuristics for column alignment. |
+| `_strip_units(name)` *(staticmethod)* | Removes trailing unit text `(…)` from a header. |
+| `_extract_units_from_header(name)` *(staticmethod)* | Extracts the text inside parentheses as unit. |
+| `_find_time_column(self, df)` | Returns first column name matching “Time” (case-insensitive) or `None`. Use if your custom run needs time axis detection. |
+| `_build_units_map_from_csv(self, columns)` | Creates dict mapping each column header to unit string derived from header. |
+| `_find_vector_columns(self, df, base_name)` | Attempts to find X/Y/Z columns for a vector base (e.g., `HydroF`). Returns tuple `(x_col, y_col, z_col)`. |
+| `_get_unit_with_fallback(self, column_name, units_map_csv)` | Returns unit from CSV map or pre-defined defaults. |
+| `_compute_stats_after_threshold(self, t, y, threshold_time)` | Computes mean/min/max considering data after `threshold_time`. Returns tuple `(mean, min, max, t_min, t_max, used_tail_flag)`. |
+| `_draw_stats_for_series(...)` | Adds mean/min/max annotations to a Matplotlib axis for a series. Called internally; can be reused for custom plots by passing axis and column metadata. |
+| `_plot_group(...)` | Creates grouped plots combining multiple columns, saving figure to disk. Accepts `series_cols`, label/unit maps, output path, etc. |
+| `run(self, csv_file, output_dir, case_name=None, mean_start=300.0, **kwargs)` | Orchestrates plotting: detects channels, generates magnitude plots, group plots, writes PNG files. Use as primary API: `PlottingRunner(mq, "Case01", "log").run("case.csv", "plots")`. |
+
+---
+
+### `processing/frequency.py`
+
+#### Module Constants
+
+- `SCIPY_AVAILABLE`: `True` if `scipy` is present.
+- `MATPLOTLIB_AVAILABLE`: re-exported from `processing.plotting`.
+- `find_peaks`: assigned when SciPy is present.
+
+#### Class `FrequencyAnalysisRunner`
+
+Instantiate with `(message_queue, case_name, log_type)`.
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, message_queue, case_name, log_type)` | Stores context. |
+| `log(self, message)` | Posts `"[case][Freq] message"` to GUI log. |
+| `_canonicalize_column_names(self, df, units_map)` | Normalizes column names (e.g., `fairten1x` → `FAIRTEN1`) and merges duplicates. Invoke when loading data for custom frequency analyses. |
+| `_read_fast_csv(self, csv_file)` | Reads CSV, handles optional units row, converts to numeric, canonicalizes column names. Returns `(DataFrame, units_map)` or `(None, None)` on failure. |
+| `_calculate_frequencies_from_decay(self, time, data)` | Detects peaks using SciPy, computes damping metrics, returns dict of results. Call directly for unit tests on numpy arrays. |
+| `_plot_decay_analysis(self, time, data, results, column_name, units, filename)` | Generates plot showing decay envelope and stats table, saves PNG. |
+| `run(self, csv_file, column_name, output_dir, start_time)` | High-level API: loads CSV, filters after `start_time`, zero-shifts signal, performs analysis, saves JSON + plot. Usage: `FrequencyAnalysisRunner(mq,"Case","log").run("case.csv","PtfmHeave","freq_out",300)`. |
+
+---
+
+### `processing/dalembert.py`
+
+#### Class `DalembertLogHandler(logging.Handler)`
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, message_queue, case_name, log_type)` | Initializes logging handler to forward records to GUI queue. Attach to logger via `logger.addHandler(DalembertLogHandler(...))`. |
+| `emit(self, record)` | Formats record and enqueues message. Called automatically by logging framework. |
+
+#### Class `DalembertRunner`
+
+Instantiate with `(message_queue, case_name, log_type)`.
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, message_queue, case_name, log_type)` | Sets up logging via `_setup_logger`. |
+| `_setup_logger(self)` | Creates a dedicated logger with `DalembertLogHandler`. Override to customize logging. |
+| `log(self, message)` | Convenience wrapper for `self.logger.info(message)`. |
+| `run(self, fst, glue_out, outdir, analysis_start_time, **kwargs)` | Entry point for d’Alembert staticization. Reads FST, Glue code output, optional MoorDyn output, writes reports/CSV to `outdir`. Invoke with absolute file paths. Keyword overrides include `outb`, `moordyn_out`, `rotate_ed`, `override_mass`, `override_com`, `override_inertia`, `log_step`. |
+| `_perform_dalembert_calculations(self, df, df_md, args, mass, r_com, inertia_tensor, PRP, yaw_xyz, twrbase_xyz, fairleads, anchors, analysis_start_time, geo)` | Core loop computing load balances for each timestep, producing timeseries CSV + report. Generally not called directly—requires fully prepared inputs. |
+| `_detect_mooring_force_methods(self, df, df_md, fairleads)` | Determines whether MoorDyn high-fidelity force columns exist or if geometric approximation is needed. Returns dict `{line_id: method}`. |
+| `_calculate_mooring_loads(self, row, df_md, R_plat, fairleads, anchors, force_methods, timestep_index)` | Computes mooring forces/moments for one timestep based on chosen method. Returns `(aggregate_force, aggregate_moment, detail_list)`. |
+| `_write_reports(self, loads_df, args, geo, fairleads, mass, r_com, inertia_tensor, analysis_start_time, force_methods)` | Generates textual report and extrema CSV using loads dataframe. |
+| `_generate_mooring_stats_report(self, fairleads)` | Summarizes mooring line statistics from sampled data collected during `_perform_dalembert_calculations`. Returns list of strings. |
+| `_parse_glue_text(self, path)` | Reads a whitespace-delimited Glue output file, returning lowercased DataFrame. Raises runtime error on failure. |
+| `_collapse_duplicates(self, df)` | Averages duplicate columns within a DataFrame. Use when raw Glue output has repeated columns. |
+| `_parse_elastodyn_geometry(self, ed_path)` | Extracts geometry metrics from ElastoDyn input file; returns dict with tower heights, yaw bearing, etc. |
+| `_parse_moordyn_points(self, md_path)` | Parses MoorDyn input to identify fairlead and anchor coordinates. Returns two dicts keyed by line ID. |
+| `_rotmat_from_rpy_deg(roll, pitch, yaw)` *(staticmethod)* | Computes rotation matrix from roll/pitch/yaw degrees. Useful for coordinate transforms elsewhere. |
+
+#### Nested Class `MassPropertyBuilder`
+
+Construct via `builder = DalembertRunner.MassPropertyBuilder(fst_path, logger)`.
+
+| Method | Purpose / Usage Instructions |
+| --- | --- |
+| `__init__(self, fst_path, logger)` | Locates referenced ElastoDyn, tower, and blade files; parses mass distributions. Raises `RuntimeError` if files missing. |
+| `_read_lines(self, path)` | Wrapper around `utils.file_utils._read_lines`. |
+| `_parse_elastodyn(self, ed_path)` | Parses ElastoDyn file for masses, inertias, geometry, blade pre-cone, etc. |
+| `_find_tower_file_from_ed(self)` | Resolves tower file path referenced in ElastoDyn input. |
+| `_find_ed_blade_mass_file(self)` | Finds blade mass distribution file from ElastoDyn input. |
+| `_parse_dist_prop(self, path, key1, key2, val_idx=1)` | Parses distribution property tables (tower/blade mass density). Returns list of `(fraction, value)` tuples. |
+| `parallel_axis(Ic, mass, r)` *(staticmethod)* | Applies parallel axis theorem to shift inertia tensor. |
+| `compute(self)` | Computes total mass, center of mass, and inertia tensor from parsed components. Returns `(total_mass, r_com, I_com)`. |
+| `_tower_mass_properties(self)` | Calculates per-segment mass properties for tower, returning lists `(masses, centers, inertias)`. |
+| `_blades_mass_properties(self, r_hub, R_rotor)` | Integrates blade mass properties for each blade, returning lists `(masses, centers, inertias)`. |
+
+---
+
+### `processing/__pycache__`, `utils/__pycache__`
+
+Bytecode caches—no callable interfaces.
+
+---
+
+### `processing/__init__.py`, `utils/__init__.py`
+
+- `utils.__init__`: Only docstring, no functions.
+
+---
+
+### `utils/file_utils.py`
+
+| Function | Purpose / Usage Instructions |
+| --- | --- |
+| `_strip_quotes(s)` | Remove surrounding single/double quotes from a string. Use when sanitizing inputs from text files. |
+| `_read_lines(p, logger)` | Reads file into list of lines with basic error logging; returns empty list on failure. Provide a `logging.Logger` that supports `.debug()` and `.error()`. |
+| `_find_fst_refs(fst, logger)` | Parses an FST file for referenced module file paths (EDFile, MooringFile, etc.). Returns dict `{keyword: absolute_path}`. Uses `_read_lines` internally. |
+
+---
+
+## Usage Summary
+
+1. **Launch GUI**: `python main.py` → interactively generate cases, run simulations, and post-process.
+2. **Use processing modules headlessly**:
+   ```python
+   from processing import ConverterRunner, PlottingRunner, FrequencyAnalysisRunner, DalembertRunner
+
+   mq = queue.Queue()  # or any object with .put()
+
+   # CSV conversion
+   ConverterRunner(mq, "Case01", "log").convert_openfast_to_csv_robust("input.out", "output.csv")
+
+   # Plotting
+   PlottingRunner(mq, "Case01", "log").run("output.csv", "plots_dir")
+
+   # Frequency analysis
+   FrequencyAnalysisRunner(mq, "Case01", "log").run("output.csv", "PtfmHeave", "freq_dir", 300.0)
+
+   # d'Alembert analysis
+   DalembertRunner(mq, "Case01", "log").run(
+       fst="Case01.fst",
+       glue_out="Case01.out",
+       outdir="dalembert_dir",
+       analysis_start_time=300.0,
+   )
+   ```
+
+3. **Utilities** (`utils.file_utils`) support discovery and parsing tasks; import as needed.
+
+This documentation captures the full project structure and provides usage guidance for every defined method/function in the repository.
